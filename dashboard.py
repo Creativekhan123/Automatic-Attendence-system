@@ -15,12 +15,16 @@ from PIL import Image, ImageTk
 import customtkinter as ctk
 
 from src.database import Database
+from src.camera import Camera
+from src.attendance import AttendanceEngine
+from src.face_recognizer import FaceRecognizer
 from src.config import (
     DEFAULT_BUS_ID,
     DEFAULT_DB_PATH,
     DEFAULT_SIMILARITY_THRESHOLD,
     REQUIRED_CONFIRMATIONS,
-    CONFIRMATION_WINDOW_SECONDS
+    CONFIRMATION_WINDOW_SECONDS,
+    NOTIFICATION_DURATION_SECONDS
 )
 
 # Set initial appearance mode to Dark by default
@@ -838,6 +842,22 @@ class AttendanceDashboard(ctk.CTk):
         self.active_bus_id: str = DEFAULT_BUS_ID
         self._face_recognizer = None
 
+        # Embedded Camera & Attendance Engine state
+        self._camera_device: Optional[Camera] = None
+        self._camera_thread: Optional[threading.Thread] = None
+        self._camera_running: bool = False
+        self._active_camera_mode: Optional[str] = None  # "attendance" or "registration"
+        self._camera_lock = threading.Lock()
+        self._latest_frame: Optional[np.ndarray] = None
+        self._latest_camera_error: Optional[str] = None
+        self._need_live_refresh: bool = False
+
+        # Registration Biometric State
+        self._latest_reg_faces: List[Any] = []
+        self._latest_reg_ready: bool = False
+        self._latest_reg_status: str = "Initializing camera..."
+        self._reg_captured_embedding: Optional[np.ndarray] = None
+
         # Auto-refresh timer
         self.auto_refresh_enabled = True
         self.auto_refresh_ms = 5000
@@ -986,7 +1006,7 @@ class AttendanceDashboard(ctk.CTk):
             fg_color=PALETTE["success_green"],
             hover_color="#0d9268",
             text_color="#ffffff",
-            command=self._on_start_camera
+            command=self._on_sidebar_start_camera
         )
         self.start_cam_btn.grid(row=10, column=0, padx=12, pady=(0, 4), sticky="ew")
 
@@ -1001,7 +1021,7 @@ class AttendanceDashboard(ctk.CTk):
             hover_color="#c23737",
             text_color="#ffffff",
             state="disabled",
-            command=self._on_stop_camera
+            command=self._on_sidebar_stop_camera
         )
         self.stop_cam_btn.grid(row=11, column=0, padx=12, pady=(0, 10), sticky="ew")
 
@@ -1054,6 +1074,10 @@ class AttendanceDashboard(ctk.CTk):
 
     def _show_view(self, view_name: str) -> None:
         """Switch active view in the container."""
+        # Stop any active embedded camera when leaving a camera-enabled view
+        if self.current_view in ("live", "register") and self.current_view != view_name:
+            self._stop_embedded_camera()
+
         for v in self.views.values():
             v.grid_forget()
 
@@ -1067,17 +1091,20 @@ class AttendanceDashboard(ctk.CTk):
             else:
                 btn.configure(fg_color="transparent", text_color=PALETTE["text_secondary"])
 
-        # Trigger data refresh for active view
+        # Auto-start camera when entering Attendance or Registration; refresh other views
         if view_name == "dashboard":
             self.refresh_dashboard_data()
         elif view_name == "live":
             self.refresh_live_view_data()
+            self._start_live_attendance_camera()
         elif view_name == "students":
             self.refresh_students_data()
         elif view_name == "history":
             self.refresh_history_data()
         elif view_name == "reports":
             self.refresh_reports_preview()
+        elif view_name == "register":
+            self._start_registration_camera()
         elif view_name == "settings":
             self.refresh_settings_data()
 
@@ -1095,87 +1122,33 @@ class AttendanceDashboard(ctk.CTk):
         self._show_view(self.current_view)
 
     # =========================================================================
-    # CAMERA & ATTENDANCE ENGINE SUBPROCESS CONTROLS
+    # EMBEDDED CAMERA & ATTENDANCE ENGINE LIFECYCLE CONTROLS
     # =========================================================================
 
-    def _on_start_camera(self) -> None:
-        """Launch the attendance camera engine as a background subprocess."""
-        if self._camera_process is not None and self._camera_process.poll() is None:
-            messagebox.showinfo("Already Running", "The attendance camera is already running.")
-            return
+    def _stop_embedded_camera(self) -> None:
+        """Safely stop and release any active camera worker thread and device."""
+        self._camera_running = False
+        if self._camera_thread is not None and self._camera_thread.is_alive():
+            if threading.current_thread() != self._camera_thread:
+                self._camera_thread.join(timeout=1.2)
+        self._camera_thread = None
 
-        dialog = CameraSettingsDialog(self, default_bus=self.active_bus_id, default_cam=self.camera_index)
-        self.wait_window(dialog)
-
-        if not dialog.confirmed:
-            return
-
-        self.active_bus_id = dialog.bus_id
-        self.camera_index = dialog.camera_index
-
-        cmd = [
-            sys.executable, "main.py",
-            "--bus-id", self.active_bus_id,
-            "--camera-index", str(self.camera_index),
-            "--db-path", self.db_path,
-        ]
-
-        try:
-            self._camera_process = subprocess.Popen(
-                cmd,
-                cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
-            )
-        except Exception as e:
-            messagebox.showerror("Launch Failed", f"Could not start attendance camera:\n{e}")
-            return
-
-        # Update UI States
-        self.start_cam_btn.configure(state="disabled", fg_color="#5a6478")
-        self.stop_cam_btn.configure(state="normal")
-        self.cam_status_lbl.configure(
-            text=f"● Camera Running\n  Bus: {self.active_bus_id}",
-            text_color=PALETTE["success_green"]
-        )
-
-        if hasattr(self, "live_status_badge"):
-            self.live_status_badge.configure(text="● RUNNING", text_color=PALETTE["success_green"])
-            self.live_start_btn.configure(state="disabled")
-            self.live_stop_btn.configure(state="normal")
-
-        # Start thread to monitor process termination
-        self._camera_monitor_thread = threading.Thread(
-            target=self._monitor_camera_process, daemon=True
-        )
-        self._camera_monitor_thread.start()
-
-    def _on_stop_camera(self) -> None:
-        """Terminate the running attendance camera subprocess."""
-        if self._camera_process is None or self._camera_process.poll() is not None:
-            self._reset_camera_ui()
-            return
-
-        try:
-            self._camera_process.terminate()
-            self._camera_process.wait(timeout=4)
-        except Exception:
+        if self._camera_device is not None:
             try:
-                self._camera_process.kill()
+                self._camera_device.release()
             except Exception:
                 pass
+            self._camera_device = None
 
-        self._camera_process = None
+        with self._camera_lock:
+            self._latest_frame = None
+            self._latest_camera_error = None
+
+        self._active_camera_mode = None
         self._reset_camera_ui()
-        messagebox.showinfo("Camera Stopped", "Attendance camera session ended.")
-
-    def _monitor_camera_process(self) -> None:
-        """Background thread: wait for subprocess to exit and schedule UI reset."""
-        if self._camera_process is not None:
-            self._camera_process.wait()
-        self.after(100, self._reset_camera_ui)
 
     def _reset_camera_ui(self) -> None:
         """Reset camera button and label states to stopped."""
-        self._camera_process = None
         try:
             self.start_cam_btn.configure(state="normal", fg_color=PALETTE["success_green"])
             self.stop_cam_btn.configure(state="disabled")
@@ -1184,8 +1157,380 @@ class AttendanceDashboard(ctk.CTk):
                 self.live_status_badge.configure(text="● STOPPED", text_color=PALETTE["text_tertiary"])
                 self.live_start_btn.configure(state="normal")
                 self.live_stop_btn.configure(state="disabled")
+            if hasattr(self, "live_cam_lbl"):
+                self.live_cam_lbl.configure(image="", text="Camera stopped.\nClick 'Start Attendance' to resume.")
+            if hasattr(self, "reg_cam_preview_lbl") and self.current_view != "register":
+                self.reg_cam_preview_lbl.configure(image="", text="Camera stopped.")
         except Exception:
             pass
+
+    def _on_sidebar_start_camera(self) -> None:
+        """Sidebar button: navigate to Live Attendance view and activate camera."""
+        if self.current_view != "live":
+            self._show_view("live")
+        else:
+            self._start_live_attendance_camera()
+
+    def _on_sidebar_stop_camera(self) -> None:
+        """Sidebar button: stop any running camera session."""
+        self._stop_embedded_camera()
+
+    # ------------------ LIVE ATTENDANCE CAMERA ------------------
+    def _start_live_attendance_camera(self) -> None:
+        """Start the embedded attendance camera feed inside the main window."""
+        if self._camera_running and self._active_camera_mode == "attendance":
+            return
+
+        self._stop_embedded_camera()
+
+        try:
+            cam_idx = int(self.live_cam_entry.get().strip())
+        except (ValueError, AttributeError):
+            cam_idx = self.camera_index
+
+        self.camera_index = cam_idx
+        self.active_bus_id = self.live_bus_menu.get().strip() if hasattr(self, "live_bus_menu") else DEFAULT_BUS_ID
+
+        self._camera_running = True
+        self._active_camera_mode = "attendance"
+        self._latest_camera_error = None
+
+        # Update UI States
+        self.start_cam_btn.configure(state="disabled", fg_color="#5a6478")
+        self.stop_cam_btn.configure(state="normal")
+        self.cam_status_lbl.configure(
+            text=f"● Camera Running\n  Bus: {self.active_bus_id}",
+            text_color=PALETTE["success_green"]
+        )
+        if hasattr(self, "live_status_badge"):
+            self.live_status_badge.configure(text="● RUNNING", text_color=PALETTE["success_green"])
+            self.live_start_btn.configure(state="disabled")
+            self.live_stop_btn.configure(state="normal")
+        if hasattr(self, "live_cam_lbl"):
+            self.live_cam_lbl.configure(image="", text="Starting camera stream...", text_color=PALETTE["text_secondary"])
+
+        self._camera_thread = threading.Thread(target=self._live_attendance_worker, daemon=True)
+        self._camera_thread.start()
+        self.after(35, self._update_live_camera_preview)
+
+    def _live_attendance_worker(self) -> None:
+        """Worker thread running webcam capture and real-time attendance recognition."""
+        cam = Camera(camera_index=self.camera_index)
+        if not cam.start():
+            with self._camera_lock:
+                self._latest_camera_error = "Camera could not be opened. Please check the camera connection."
+                self._camera_running = False
+            return
+
+        self._camera_device = cam
+
+        try:
+            recognizer = self.get_face_recognizer()
+        except Exception as e:
+            with self._camera_lock:
+                self._latest_camera_error = f"Error loading face recognition engine: {e}"
+                self._camera_running = False
+            cam.release()
+            return
+
+        attendance_engine = AttendanceEngine(
+            db=self.db,
+            bus_id=self.active_bus_id,
+            required_confirmations=REQUIRED_CONFIRMATIONS,
+            confirmation_window_seconds=CONFIRMATION_WINDOW_SECONDS
+        )
+
+        registered_students = self.db.get_all_students()
+        last_db_refresh = time.time()
+        recent_notification = None
+
+        while self._camera_running and self._active_camera_mode == "attendance":
+            # Sync target bus if user changed dropdown while camera runs
+            if hasattr(self, "live_bus_menu"):
+                current_bus = self.live_bus_menu.get().strip()
+                if current_bus and current_bus != attendance_engine.bus_id:
+                    attendance_engine.bus_id = current_bus
+                    attendance_engine._refresh_marked_cache()
+                    self.active_bus_id = current_bus
+
+            now = time.time()
+            if now - last_db_refresh > 5.0:
+                registered_students = self.db.get_all_students()
+                last_db_refresh = now
+
+            ret, frame = cam.read_frame()
+            if not ret or frame is None:
+                time.sleep(0.04)
+                continue
+
+            faces = recognizer.extract_faces(frame)
+            num_faces = len(faces)
+
+            for face in faces:
+                bbox = [int(v) for v in face.bbox]
+                x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
+
+                _, matched_student, score = recognizer.identify_face(
+                    face.embedding,
+                    registered_students
+                )
+
+                if matched_student is not None:
+                    status, count, newly_marked = attendance_engine.process_recognition(matched_student)
+                    student_name = matched_student["name"]
+                    student_id = matched_student["student_id"]
+
+                    if newly_marked:
+                        self._need_live_refresh = True
+                        recent_notification = (
+                            f"ATTENDANCE MARKED: {student_name} ({student_id})",
+                            time.time() + NOTIFICATION_DURATION_SECONDS,
+                            False
+                        )
+
+                    if status in ("PRESENT", "ALREADY PRESENT"):
+                        box_color = (0, 255, 0)
+                        label_line1 = f"{student_name} ({student_id})"
+                        label_line2 = "ALREADY PRESENT" if status == "ALREADY PRESENT" else "PRESENT"
+                    elif status == "CONFIRMING":
+                        box_color = (0, 255, 255)
+                        label_line1 = f"{student_name} ({student_id})"
+                        label_line2 = f"CONFIRMING ({count}/{REQUIRED_CONFIRMATIONS})"
+                    else:
+                        box_color = (0, 0, 255)
+                        label_line1 = f"{student_name} ({student_id})"
+                        label_line2 = "ERROR SAVING ATTENDANCE"
+                        recent_notification = (
+                            "Unable to save attendance. Database error.",
+                            time.time() + NOTIFICATION_DURATION_SECONDS,
+                            True
+                        )
+                else:
+                    box_color = (0, 0, 255)
+                    label_line1 = "UNKNOWN"
+                    label_line2 = ""
+
+                # Draw face bounding box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+
+                # Draw text badge
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.55
+                thickness = 2
+                (w1, h1), _ = cv2.getTextSize(label_line1, font, font_scale, thickness)
+                (w2, h2), _ = cv2.getTextSize(label_line2, font, 0.45, 1) if label_line2 else ((0, 0), 0)
+
+                badge_w = max(w1, w2) + 12
+                badge_h = h1 + (h2 + 8 if label_line2 else 0) + 10
+                badge_y1 = max(y1 - badge_h - 5, 5)
+                badge_y2 = badge_y1 + badge_h
+
+                cv2.rectangle(frame, (x1, badge_y1), (x1 + badge_w, badge_y2), (0, 0, 0), -1)
+                cv2.putText(frame, label_line1, (x1 + 6, badge_y1 + h1 + 4), font, font_scale, box_color, thickness, cv2.LINE_AA)
+                if label_line2:
+                    cv2.putText(frame, label_line2, (x1 + 6, badge_y1 + h1 + h2 + 8), font, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+            # Draw temporary toast banner if active
+            if recent_notification:
+                notif_msg, notif_expire, is_err = recent_notification
+                if time.time() <= notif_expire:
+                    bg_color = (0, 0, 180) if is_err else (0, 140, 0)
+                    cv2.rectangle(frame, (10, frame.shape[0] - 50), (frame.shape[1] - 10, frame.shape[0] - 10), bg_color, -1)
+                    cv2.putText(
+                        frame,
+                        notif_msg,
+                        (25, frame.shape[0] - 22),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA
+                    )
+                else:
+                    recent_notification = None
+
+            # Top status banner overlay
+            summary = attendance_engine.get_attendance_summary()
+            top_bar_text = f"Bus: {self.active_bus_id} | Faces: {num_faces} | Present: {summary['total_present']}/{summary['total_registered']}"
+            cv2.rectangle(frame, (10, 10), (450, 48), (0, 0, 0), -1)
+            cv2.putText(
+                frame,
+                top_bar_text,
+                (20, 36),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.60,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA
+            )
+
+            with self._camera_lock:
+                self._latest_frame = frame
+
+            time.sleep(0.03)
+
+        if cam:
+            cam.release()
+
+    def _update_live_camera_preview(self) -> None:
+        """GUI event-loop callback to refresh the live attendance video frame."""
+        if self._active_camera_mode != "attendance":
+            return
+
+        with self._camera_lock:
+            err = self._latest_camera_error
+            frame = self._latest_frame
+
+        if err:
+            self.live_cam_lbl.configure(
+                image="",
+                text=err,
+                text_color=PALETTE["danger_red"]
+            )
+            if hasattr(self, "live_status_badge"):
+                self.live_status_badge.configure(text="● ERROR", text_color=PALETTE["danger_red"])
+            self.start_cam_btn.configure(state="normal")
+            self.stop_cam_btn.configure(state="disabled")
+            return
+
+        if frame is not None:
+            try:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(rgb_frame)
+                ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(580, 435))
+                self.live_cam_lbl.configure(image=ctk_img, text="")
+                self.live_cam_lbl.image = ctk_img
+            except Exception:
+                pass
+
+        if self._need_live_refresh:
+            self._need_live_refresh = False
+            self.refresh_live_view_data()
+
+        if self._camera_running and self._active_camera_mode == "attendance":
+            self.after(35, self._update_live_camera_preview)
+
+    # ------------------ REGISTRATION CAMERA ------------------
+    def _start_registration_camera(self) -> None:
+        """Start the embedded registration camera feed inside the main window."""
+        if self._camera_running and self._active_camera_mode == "registration":
+            return
+
+        self._stop_embedded_camera()
+
+        try:
+            cam_idx = int(self.reg_cam_entry.get().strip())
+        except (ValueError, AttributeError):
+            cam_idx = 0
+
+        self.camera_index = cam_idx
+        self._camera_running = True
+        self._active_camera_mode = "registration"
+        self._latest_camera_error = None
+        self._latest_reg_ready = False
+        self._latest_reg_status = "Connecting to webcam..."
+
+        if hasattr(self, "reg_cam_preview_lbl"):
+            self.reg_cam_preview_lbl.configure(image="", text="Starting camera preview...", text_color=PALETTE["text_secondary"])
+        if hasattr(self, "reg_cam_status_lbl"):
+            self.reg_cam_status_lbl.configure(text=self._latest_reg_status, text_color=PALETTE["warning_amber"])
+
+        self._camera_thread = threading.Thread(target=self._registration_camera_worker, daemon=True)
+        self._camera_thread.start()
+        self.after(35, self._update_registration_camera_preview)
+
+    def _registration_camera_worker(self) -> None:
+        """Background worker thread capturing frames and detecting faces for enrollment."""
+        cam = Camera(camera_index=self.camera_index)
+        if not cam.start():
+            with self._camera_lock:
+                self._latest_camera_error = "Camera could not be opened. Please check the camera connection."
+                self._latest_reg_status = "Camera could not be opened. Please check the camera connection."
+                self._camera_running = False
+            return
+
+        self._camera_device = cam
+
+        try:
+            recognizer = self.get_face_recognizer()
+        except Exception as e:
+            with self._camera_lock:
+                self._latest_camera_error = f"Error loading face recognition engine: {e}"
+                self._latest_reg_status = f"Error loading face recognition engine: {e}"
+                self._camera_running = False
+            cam.release()
+            return
+
+        while self._camera_running and self._active_camera_mode == "registration":
+            ret, frame = cam.read_frame()
+            if not ret or frame is None:
+                time.sleep(0.04)
+                continue
+
+            display_frame = frame.copy()
+            faces = recognizer.extract_faces(frame)
+            num_faces = len(faces)
+
+            if num_faces == 1:
+                face = faces[0]
+                bbox = [int(v) for v in face.bbox]
+                cv2.rectangle(display_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+                cv2.putText(display_frame, "READY TO CAPTURE", (bbox[0], max(bbox[1] - 10, 20)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
+                status_txt = "READY: Exactly 1 face detected. Click 'Capture Face' or press SPACE."
+                ready = True
+            elif num_faces == 0:
+                status_txt = "Looking for student face... Please look directly at the camera."
+                ready = False
+            else:
+                for f in faces:
+                    bbox = [int(v) for v in f.bbox]
+                    cv2.rectangle(display_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 2)
+                status_txt = f"WARNING: {num_faces} faces detected. ONLY 1 face allowed!"
+                ready = False
+
+            with self._camera_lock:
+                self._latest_frame = display_frame
+                self._latest_reg_faces = faces
+                self._latest_reg_ready = ready
+                self._latest_reg_status = status_txt
+
+            time.sleep(0.03)
+
+        if cam:
+            cam.release()
+
+    def _update_registration_camera_preview(self) -> None:
+        """GUI event-loop callback to refresh the registration preview."""
+        if self._active_camera_mode != "registration":
+            return
+
+        with self._camera_lock:
+            err = self._latest_camera_error
+            frame = self._latest_frame
+            status = self._latest_reg_status
+            ready = self._latest_reg_ready
+
+        if err:
+            self.reg_cam_preview_lbl.configure(image="", text=err, text_color=PALETTE["danger_red"])
+            self.reg_cam_status_lbl.configure(text=err, text_color=PALETTE["danger_red"])
+            return
+
+        color_key = "success_green" if ready else ("danger_red" if "WARNING" in status or "Error" in status else "warning_amber")
+        self.reg_cam_status_lbl.configure(text=status, text_color=PALETTE[color_key])
+
+        if frame is not None:
+            try:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(rgb_frame)
+                ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(520, 390))
+                self.reg_cam_preview_lbl.configure(image=ctk_img, text="")
+                self.reg_cam_preview_lbl.image = ctk_img
+            except Exception:
+                pass
+
+        if self._camera_running and self._active_camera_mode == "registration":
+            self.after(35, self._update_registration_camera_preview)
 
     # =========================================================================
     # VIEW 1: DASHBOARD (OVERALL & BUS ATTENDANCE)
@@ -1583,12 +1928,12 @@ class AttendanceDashboard(ctk.CTk):
     # =========================================================================
 
     def _create_live_view(self) -> ctk.CTkFrame:
-        """Build the dedicated Live Attendance session view."""
+        """Build the dedicated Live Attendance session view with embedded camera feed."""
         frame = ctk.CTkFrame(self.view_container, fg_color=PALETTE["bg_main"])
         frame.grid_columnconfigure(0, weight=1)
-        frame.grid_rowconfigure(3, weight=1)
+        frame.grid_rowconfigure(1, weight=1)
 
-        # Header
+        # 1. Header
         header = ctk.CTkFrame(frame, corner_radius=10, fg_color=PALETTE["bg_card"], border_width=1, border_color=PALETTE["border"])
         header.grid(row=0, column=0, padx=22, pady=(18, 10), sticky="ew")
 
@@ -1601,116 +1946,115 @@ class AttendanceDashboard(ctk.CTk):
 
         ctk.CTkLabel(
             header,
-            text="Launch and monitor on-bus facial recognition camera and boarding attendance",
+            text="Embedded on-bus facial recognition camera and real-time boarding attendance",
             font=ctk.CTkFont(family="Segoe UI", size=13),
             text_color=PALETTE["text_secondary"]
         ).pack(anchor="w", padx=20, pady=(0, 12))
 
-        # Controls & Status Card
-        ctrl_card = ctk.CTkFrame(frame, corner_radius=10, fg_color=PALETTE["bg_card"], border_width=1, border_color=PALETTE["border"])
-        ctrl_card.grid(row=1, column=0, padx=22, pady=(0, 10), sticky="ew")
+        # 2. Main Content: Split Camera (Left) & Attendance Info / Boarding Log (Right)
+        content_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        content_frame.grid(row=1, column=0, padx=22, pady=0, sticky="nsew")
+        content_frame.grid_columnconfigure(0, weight=3)
+        content_frame.grid_columnconfigure(1, weight=2)
+        content_frame.grid_rowconfigure(0, weight=1)
 
-        # Top row: Settings
-        top_row = ctk.CTkFrame(ctrl_card, fg_color="transparent")
-        top_row.pack(fill="x", padx=16, pady=(12, 6))
+        # ---- LEFT PANEL: Embedded Camera Feed ----
+        cam_card = ctk.CTkFrame(content_frame, corner_radius=10, fg_color=PALETTE["bg_card"], border_width=1, border_color=PALETTE["border"])
+        cam_card.grid(row=0, column=0, padx=(0, 12), pady=0, sticky="nsew")
+        cam_card.grid_columnconfigure(0, weight=1)
+        cam_card.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(top_row, text="Target Bus:", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).pack(side="left", padx=(0, 6))
+        cam_hdr = ctk.CTkFrame(cam_card, fg_color="transparent")
+        cam_hdr.grid(row=0, column=0, padx=16, pady=(12, 6), sticky="ew")
 
+        ctk.CTkLabel(
+            cam_hdr,
+            text="📹 Live Camera Feed",
+            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+            text_color=PALETTE["text_primary"]
+        ).pack(side="left")
+
+        self.live_status_badge = ctk.CTkLabel(
+            cam_hdr,
+            text="● STOPPED",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text_color=PALETTE["text_tertiary"]
+        )
+        self.live_status_badge.pack(side="right")
+
+        # Camera Display Label
+        self.live_cam_lbl = ctk.CTkLabel(
+            cam_card,
+            text="Camera stopped.\nClick 'Start Attendance' to begin.",
+            font=ctk.CTkFont(family="Segoe UI", size=14),
+            text_color=PALETTE["text_secondary"],
+            fg_color=PALETTE["table_bg"],
+            corner_radius=8
+        )
+        self.live_cam_lbl.grid(row=1, column=0, padx=14, pady=(0, 14), sticky="nsew")
+
+        # ---- RIGHT PANEL: Attendance Info & Recent Boarding Log ----
+        info_card = ctk.CTkFrame(content_frame, corner_radius=10, fg_color=PALETTE["bg_card"], border_width=1, border_color=PALETTE["border"])
+        info_card.grid(row=0, column=1, padx=(0, 0), pady=0, sticky="nsew")
+        info_card.grid_columnconfigure(0, weight=1)
+        info_card.grid_rowconfigure(4, weight=1)
+
+        ctk.CTkLabel(
+            info_card,
+            text="Attendance Session Info",
+            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+            text_color=PALETTE["text_primary"]
+        ).grid(row=0, column=0, padx=16, pady=(12, 6), sticky="w")
+
+        # Settings row inside right card
+        settings_row = ctk.CTkFrame(info_card, fg_color="transparent")
+        settings_row.grid(row=1, column=0, padx=16, pady=(0, 8), sticky="ew")
+
+        ctk.CTkLabel(settings_row, text="Bus:", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).pack(side="left", padx=(0, 4))
         self.live_bus_menu = ctk.CTkOptionMenu(
-            top_row,
+            settings_row,
             values=["BUS01"],
-            width=130,
-            height=34,
+            width=110,
+            height=32,
             fg_color=PALETTE["btn_neutral"],
             button_color=PALETTE["btn_neutral_hover"],
             text_color=PALETTE["text_primary"],
             command=self._on_live_bus_selected
         )
-        self.live_bus_menu.pack(side="left", padx=(0, 16))
+        self.live_bus_menu.pack(side="left", padx=(0, 12))
 
-        ctk.CTkLabel(top_row, text="Camera Index:", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).pack(side="left", padx=(0, 6))
-
+        ctk.CTkLabel(settings_row, text="Cam:", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).pack(side="left", padx=(0, 4))
         self.live_cam_entry = ctk.CTkEntry(
-            top_row,
-            width=70,
-            height=34,
+            settings_row,
+            width=50,
+            height=32,
             fg_color=PALETTE["bg_sidebar"],
             border_color=PALETTE["border"],
             text_color=PALETTE["text_primary"]
         )
         self.live_cam_entry.insert(0, str(self.camera_index))
-        self.live_cam_entry.pack(side="left", padx=(0, 20))
+        self.live_cam_entry.pack(side="left")
 
-        # Action Buttons
-        self.live_start_btn = ctk.CTkButton(
-            top_row,
-            text="🎥 Start Attendance",
-            width=160,
-            height=36,
-            fg_color=PALETTE["success_green"],
-            hover_color="#0d9268",
-            font=ctk.CTkFont(weight="bold"),
-            text_color="#ffffff",
-            command=self._on_live_start
-        )
-        self.live_start_btn.pack(side="left", padx=4)
-
-        self.live_stop_btn = ctk.CTkButton(
-            top_row,
-            text="🛑 Stop Attendance",
-            width=150,
-            height=36,
-            fg_color=PALETTE["danger_red"],
-            hover_color="#c23737",
-            font=ctk.CTkFont(weight="bold"),
-            text_color="#ffffff",
-            state="disabled",
-            command=self._on_stop_camera
-        )
-        self.live_stop_btn.pack(side="left", padx=4)
-
-        # Bottom row: Status Indicators
-        bot_row = ctk.CTkFrame(ctrl_card, fg_color="transparent")
-        bot_row.pack(fill="x", padx=16, pady=(0, 12))
-
-        ctk.CTkLabel(bot_row, text="Session Status:", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).pack(side="left", padx=(0, 6))
-        self.live_status_badge = ctk.CTkLabel(
-            bot_row,
-            text="● STOPPED",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=PALETTE["text_tertiary"]
-        )
-        self.live_status_badge.pack(side="left", padx=(0, 24))
-
+        # Present Stats Banner
         self.live_stats_lbl = ctk.CTkLabel(
-            bot_row,
+            info_card,
             text="Present on BUS01: 0 / 0 (0.0%)",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=PALETTE["text_primary"]
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=PALETTE["accent_blue"]
         )
-        self.live_stats_lbl.pack(side="left")
+        self.live_stats_lbl.grid(row=2, column=0, padx=16, pady=(0, 8), sticky="w")
 
-        # Live Feed Table Header
-        feed_header = ctk.CTkFrame(frame, fg_color="transparent")
-        feed_header.grid(row=2, column=0, padx=22, pady=(4, 4), sticky="ew")
-
+        # Boarding Log Table Header
         ctk.CTkLabel(
-            feed_header,
+            info_card,
             text="Today's Boarding Activity Log",
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
             text_color=PALETTE["text_primary"]
-        ).pack(side="left")
-
-        ctk.CTkLabel(
-            feed_header,
-            text="Automatically updates as students board",
-            font=ctk.CTkFont(size=12),
-            text_color=PALETTE["text_secondary"]
-        ).pack(side="right")
+        ).grid(row=3, column=0, padx=16, pady=(4, 4), sticky="w")
 
         # Table Container
-        table_container = ctk.CTkFrame(frame, corner_radius=10, fg_color=PALETTE["table_bg"], border_width=1, border_color=PALETTE["border"])
-        table_container.grid(row=3, column=0, padx=22, pady=(0, 18), sticky="nsew")
+        table_container = ctk.CTkFrame(info_card, corner_radius=8, fg_color=PALETTE["table_bg"], border_width=1, border_color=PALETTE["border"])
+        table_container.grid(row=4, column=0, padx=14, pady=(0, 14), sticky="nsew")
         table_container.grid_columnconfigure(0, weight=1)
         table_container.grid_rowconfigure(0, weight=1)
 
@@ -1722,65 +2066,72 @@ class AttendanceDashboard(ctk.CTk):
             selectmode="browse"
         )
         self.live_tree.heading("student_id", text="Student ID", anchor="center")
-        self.live_tree.heading("name", text="Student Name", anchor="w")
+        self.live_tree.heading("name", text="Name", anchor="w")
         self.live_tree.heading("class", text="Class", anchor="center")
         self.live_tree.heading("bus", text="Bus", anchor="center")
-        self.live_tree.heading("time", text="Boarding Time", anchor="center")
-        self.live_tree.heading("status", text="Verification Status", anchor="center")
+        self.live_tree.heading("time", text="Time", anchor="center")
+        self.live_tree.heading("status", text="Status", anchor="center")
 
-        self.live_tree.column("student_id", width=120, anchor="center")
-        self.live_tree.column("name", width=220, anchor="w")
-        self.live_tree.column("class", width=90, anchor="center")
-        self.live_tree.column("bus", width=110, anchor="center")
-        self.live_tree.column("time", width=120, anchor="center")
-        self.live_tree.column("status", width=150, anchor="center")
+        self.live_tree.column("student_id", width=90, anchor="center")
+        self.live_tree.column("name", width=140, anchor="w")
+        self.live_tree.column("class", width=60, anchor="center")
+        self.live_tree.column("bus", width=75, anchor="center")
+        self.live_tree.column("time", width=80, anchor="center")
+        self.live_tree.column("status", width=100, anchor="center")
 
         scrollbar = ttk.Scrollbar(table_container, orient="vertical", command=self.live_tree.yview)
         self.live_tree.configure(yscrollcommand=scrollbar.set)
-        self.live_tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
-        scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
+        self.live_tree.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=6)
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 6), pady=6)
+
+        # 3. Bottom Controls Row
+        btn_bar = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_bar.grid(row=2, column=0, padx=22, pady=(12, 16), sticky="ew")
+
+        self.live_start_btn = ctk.CTkButton(
+            btn_bar,
+            text="🎥 Start Attendance",
+            width=180,
+            height=40,
+            fg_color=PALETTE["success_green"],
+            hover_color="#0d9268",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color="#ffffff",
+            command=self._start_live_attendance_camera
+        )
+        self.live_start_btn.pack(side="left", padx=(0, 10))
+
+        self.live_stop_btn = ctk.CTkButton(
+            btn_bar,
+            text="🛑 Stop Attendance",
+            width=170,
+            height=40,
+            fg_color=PALETTE["danger_red"],
+            hover_color="#c23737",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color="#ffffff",
+            state="disabled",
+            command=self._stop_embedded_camera
+        )
+        self.live_stop_btn.pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            btn_bar,
+            text="⬅ Back to Dashboard",
+            width=160,
+            height=40,
+            fg_color=PALETTE["btn_neutral"],
+            hover_color=PALETTE["btn_neutral_hover"],
+            text_color=PALETTE["text_primary"],
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            command=lambda: self._show_view("dashboard")
+        ).pack(side="right")
 
         return frame
 
     def _on_live_bus_selected(self, bus_id: str) -> None:
         self.active_bus_id = bus_id
         self.refresh_live_view_data()
-
-    def _on_live_start(self) -> None:
-        try:
-            self.camera_index = int(self.live_cam_entry.get().strip())
-        except ValueError:
-            messagebox.showerror("Invalid Input", "Camera Index must be an integer (e.g. 0).")
-            return
-
-        self.active_bus_id = self.live_bus_menu.get().strip()
-
-        cmd = [
-            sys.executable, "main.py",
-            "--bus-id", self.active_bus_id,
-            "--camera-index", str(self.camera_index),
-            "--db-path", self.db_path,
-        ]
-
-        try:
-            self._camera_process = subprocess.Popen(
-                cmd,
-                cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
-            )
-        except Exception as e:
-            messagebox.showerror("Launch Failed", f"Could not start attendance camera:\n{e}")
-            return
-
-        self.start_cam_btn.configure(state="disabled", fg_color="#5a6478")
-        self.stop_cam_btn.configure(state="normal")
-        self.cam_status_lbl.configure(text=f"● Camera Running\n  Bus: {self.active_bus_id}", text_color=PALETTE["success_green"])
-
-        self.live_status_badge.configure(text="● RUNNING", text_color=PALETTE["success_green"])
-        self.live_start_btn.configure(state="disabled")
-        self.live_stop_btn.configure(state="normal")
-
-        self._camera_monitor_thread = threading.Thread(target=self._monitor_camera_process, daemon=True)
-        self._camera_monitor_thread.start()
 
     def refresh_live_view_data(self) -> None:
         """Update live attendance board metrics and recent boarding logs."""
@@ -2587,95 +2938,143 @@ class AttendanceDashboard(ctk.CTk):
     # =========================================================================
 
     def _create_register_view(self) -> ctk.CTkFrame:
-        """Build the Student Registration wizard view (embedded in the dashboard)."""
+        """Build the student registration view with embedded camera and form fields."""
         frame = ctk.CTkFrame(self.view_container, fg_color=PALETTE["bg_main"])
         frame.grid_columnconfigure(0, weight=1)
-        frame.grid_rowconfigure(2, weight=1)
+        frame.grid_rowconfigure(1, weight=1)
 
-        # Header
+        # 1. Header
         header = ctk.CTkFrame(frame, corner_radius=10, fg_color=PALETTE["bg_card"], border_width=1, border_color=PALETTE["border"])
-        header.grid(row=0, column=0, padx=22, pady=(18, 12), sticky="ew")
+        header.grid(row=0, column=0, padx=22, pady=(18, 10), sticky="ew")
 
         ctk.CTkLabel(
             header,
-            text="Register New Student",
+            text="Register Student",
             font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"),
             text_color=PALETTE["text_primary"]
         ).pack(anchor="w", padx=20, pady=(12, 1))
 
         ctk.CTkLabel(
             header,
-            text="Enroll a student's facial biometrics and assign them to a school bus route",
+            text="Live face capture and biometric student registration into the attendance database",
             font=ctk.CTkFont(family="Segoe UI", size=13),
             text_color=PALETTE["text_secondary"]
         ).pack(anchor="w", padx=20, pady=(0, 12))
 
-        # Steps bar
-        info_bar = ctk.CTkFrame(frame, corner_radius=10, fg_color=PALETTE["bg_card"], border_width=1, border_color=PALETTE["border"])
-        info_bar.grid(row=1, column=0, padx=22, pady=(0, 12), sticky="ew")
+        # 2. Main Content: Split Camera (Left) & Student Details Form (Right)
+        content_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        content_frame.grid(row=1, column=0, padx=22, pady=0, sticky="nsew")
+        content_frame.grid_columnconfigure(0, weight=3)
+        content_frame.grid_columnconfigure(1, weight=2)
+        content_frame.grid_rowconfigure(0, weight=1)
 
-        steps = [
-            ("1️⃣", "Enter student details below"),
-            ("2️⃣", "Click 'Open Camera & Capture'"),
-            ("3️⃣", "Align single face in green box"),
-            ("4️⃣", "Press SPACEBAR — enrolled!"),
-        ]
-        steps_row = ctk.CTkFrame(info_bar, fg_color="transparent")
-        steps_row.pack(fill="x", padx=16, pady=10)
+        # ---- LEFT PANEL: Embedded Camera Feed & Detection Status ----
+        cam_card = ctk.CTkFrame(content_frame, corner_radius=10, fg_color=PALETTE["bg_card"], border_width=1, border_color=PALETTE["border"])
+        cam_card.grid(row=0, column=0, padx=(0, 12), pady=0, sticky="nsew")
+        cam_card.grid_columnconfigure(0, weight=1)
+        cam_card.grid_rowconfigure(1, weight=1)
 
-        for icon, text in steps:
-            step_cell = ctk.CTkFrame(steps_row, fg_color=PALETTE["bg_sidebar"], corner_radius=8)
-            step_cell.pack(side="left", expand=True, fill="x", padx=6, pady=4)
-            ctk.CTkLabel(step_cell, text=icon, font=ctk.CTkFont(size=18)).pack(pady=(6, 0))
-            ctk.CTkLabel(
-                step_cell, text=text,
-                font=ctk.CTkFont(family="Segoe UI", size=11),
-                text_color=PALETTE["text_secondary"],
-                wraplength=130
-            ).pack(pady=(2, 8), padx=8)
+        cam_hdr = ctk.CTkFrame(cam_card, fg_color="transparent")
+        cam_hdr.grid(row=0, column=0, padx=16, pady=(12, 6), sticky="ew")
 
-        # Form Container
-        form_outer = ctk.CTkFrame(frame, corner_radius=10, fg_color=PALETTE["bg_card"], border_width=1, border_color=PALETTE["border"])
-        form_outer.grid(row=2, column=0, padx=22, pady=(0, 22), sticky="nsew")
-        form_outer.grid_columnconfigure(0, weight=1)
-        form_outer.grid_columnconfigure(1, weight=1)
-        form_outer.grid_rowconfigure(5, weight=1)
+        ctk.CTkLabel(
+            cam_hdr,
+            text="📷 Live Registration Camera",
+            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+            text_color=PALETTE["text_primary"]
+        ).pack(side="left")
 
-        # Left Column: Form Fields
-        form_left = ctk.CTkFrame(form_outer, fg_color="transparent")
-        form_left.grid(row=0, column=0, padx=(20, 10), pady=20, sticky="nsew")
-        form_left.grid_columnconfigure(0, weight=1)
+        # Camera Display Label
+        self.reg_cam_preview_lbl = ctk.CTkLabel(
+            cam_card,
+            text="Connecting to webcam...",
+            font=ctk.CTkFont(family="Segoe UI", size=14),
+            text_color=PALETTE["text_secondary"],
+            fg_color=PALETTE["table_bg"],
+            corner_radius=8
+        )
+        self.reg_cam_preview_lbl.grid(row=1, column=0, padx=14, pady=(0, 8), sticky="nsew")
+
+        # Camera status label below preview
+        self.reg_cam_status_lbl = ctk.CTkLabel(
+            cam_card,
+            text="Initializing camera...",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text_color=PALETTE["warning_amber"]
+        )
+        self.reg_cam_status_lbl.grid(row=2, column=0, padx=14, pady=(0, 8), sticky="ew")
+
+        # Fallback & camera index row
+        cam_tools_row = ctk.CTkFrame(cam_card, fg_color="transparent")
+        cam_tools_row.grid(row=3, column=0, padx=14, pady=(0, 14), sticky="ew")
+
+        ctk.CTkButton(
+            cam_tools_row,
+            text="📁 Select Photo File",
+            width=150,
+            height=32,
+            fg_color=PALETTE["btn_neutral"],
+            hover_color=PALETTE["btn_neutral_hover"],
+            text_color=PALETTE["text_primary"],
+            command=self._on_select_photo_file
+        ).pack(side="left")
+
+        ctk.CTkLabel(cam_tools_row, text="Camera Index:", font=ctk.CTkFont(size=12), text_color=PALETTE["text_secondary"]).pack(side="left", padx=(16, 6))
+        self.reg_cam_entry = ctk.CTkEntry(
+            cam_tools_row,
+            width=50,
+            height=32,
+            fg_color=PALETTE["bg_sidebar"],
+            border_color=PALETTE["border"],
+            text_color=PALETTE["text_primary"]
+        )
+        self.reg_cam_entry.insert(0, "0")
+        self.reg_cam_entry.pack(side="left")
+
+        # ---- RIGHT PANEL: Student Details Form & Action ----
+        form_card = ctk.CTkFrame(content_frame, corner_radius=10, fg_color=PALETTE["bg_card"], border_width=1, border_color=PALETTE["border"])
+        form_card.grid(row=0, column=1, padx=(0, 0), pady=0, sticky="nsew")
+        form_card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            form_card,
+            text="Student Details",
+            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+            text_color=PALETTE["text_primary"]
+        ).pack(anchor="w", padx=18, pady=(14, 10))
+
+        # Form fields
+        form_inner = ctk.CTkFrame(form_card, fg_color="transparent")
+        form_inner.pack(fill="x", padx=18, pady=0)
+        form_inner.grid_columnconfigure(0, weight=1)
 
         # Student ID
-        ctk.CTkLabel(form_left, text="Student ID *", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).grid(row=0, column=0, sticky="w", pady=(0, 2))
+        ctk.CTkLabel(form_inner, text="Student ID *", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).grid(row=0, column=0, sticky="w", pady=(0, 2))
         self.reg_id_entry = ctk.CTkEntry(
-            form_left, height=36, placeholder_text="e.g. STU001",
-            fg_color=PALETTE["bg_sidebar"], border_color=PALETTE["border"],
-            text_color=PALETTE["text_primary"]
+            form_inner, height=36, placeholder_text="e.g. STU001",
+            fg_color=PALETTE["bg_sidebar"], border_color=PALETTE["border"], text_color=PALETTE["text_primary"]
         )
-        self.reg_id_entry.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        self.reg_id_entry.grid(row=1, column=0, sticky="ew", pady=(0, 8))
 
         # Full Name
-        ctk.CTkLabel(form_left, text="Full Name *", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).grid(row=2, column=0, sticky="w", pady=(0, 2))
+        ctk.CTkLabel(form_inner, text="Full Name *", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).grid(row=2, column=0, sticky="w", pady=(0, 2))
         self.reg_name_entry = ctk.CTkEntry(
-            form_left, height=36, placeholder_text="e.g. Alice Johnson",
-            fg_color=PALETTE["bg_sidebar"], border_color=PALETTE["border"],
-            text_color=PALETTE["text_primary"]
+            form_inner, height=36, placeholder_text="e.g. Alex Johnson",
+            fg_color=PALETTE["bg_sidebar"], border_color=PALETTE["border"], text_color=PALETTE["text_primary"]
         )
-        self.reg_name_entry.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        self.reg_name_entry.grid(row=3, column=0, sticky="ew", pady=(0, 8))
 
         # Class / Grade
-        ctk.CTkLabel(form_left, text="Class / Grade *", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).grid(row=4, column=0, sticky="w", pady=(0, 2))
+        ctk.CTkLabel(form_inner, text="Class / Grade *", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).grid(row=4, column=0, sticky="w", pady=(0, 2))
         self.reg_class_entry = ctk.CTkEntry(
-            form_left, height=36, placeholder_text="e.g. 5A",
-            fg_color=PALETTE["bg_sidebar"], border_color=PALETTE["border"],
-            text_color=PALETTE["text_primary"]
+            form_inner, height=36, placeholder_text="e.g. 5A",
+            fg_color=PALETTE["bg_sidebar"], border_color=PALETTE["border"], text_color=PALETTE["text_primary"]
         )
-        self.reg_class_entry.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        self.reg_class_entry.grid(row=5, column=0, sticky="ew", pady=(0, 8))
 
         # Assigned Bus
-        ctk.CTkLabel(form_left, text="Assigned Bus *", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).grid(row=6, column=0, sticky="w", pady=(0, 2))
-        bus_row = ctk.CTkFrame(form_left, fg_color="transparent")
+        ctk.CTkLabel(form_inner, text="Assigned Bus *", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).grid(row=6, column=0, sticky="w", pady=(0, 2))
+        bus_row = ctk.CTkFrame(form_inner, fg_color="transparent")
         bus_row.grid(row=7, column=0, sticky="ew", pady=(0, 10))
         bus_row.grid_columnconfigure(0, weight=1)
 
@@ -2692,123 +3091,124 @@ class AttendanceDashboard(ctk.CTk):
         self.reg_bus_menu.grid(row=0, column=0, sticky="ew", padx=(0, 6))
 
         self.reg_bus_custom_entry = ctk.CTkEntry(
-            bus_row, height=36, placeholder_text="Or type new bus...",
-            width=140,
-            fg_color=PALETTE["bg_sidebar"], border_color=PALETTE["border"],
-            text_color=PALETTE["text_primary"]
+            bus_row, height=36, placeholder_text="Or new bus...",
+            width=110,
+            fg_color=PALETTE["bg_sidebar"], border_color=PALETTE["border"], text_color=PALETTE["text_primary"]
         )
         self.reg_bus_custom_entry.grid(row=0, column=1, sticky="ew")
 
-        # Camera index
-        ctk.CTkLabel(form_left, text="Webcam Device Index", font=ctk.CTkFont(size=12, weight="bold"), text_color=PALETTE["text_secondary"]).grid(row=8, column=0, sticky="w", pady=(0, 2))
-        self.reg_cam_entry = ctk.CTkEntry(
-            form_left, height=36, placeholder_text="0",
-            fg_color=PALETTE["bg_sidebar"], border_color=PALETTE["border"],
-            text_color=PALETTE["text_primary"]
-        )
-        self.reg_cam_entry.insert(0, "0")
-        self.reg_cam_entry.grid(row=9, column=0, sticky="ew", pady=(0, 12))
+        # Capture status badge card
+        status_box = ctk.CTkFrame(form_card, fg_color=PALETTE["bg_sidebar"], corner_radius=8, border_width=1, border_color=PALETTE["border"])
+        status_box.pack(fill="x", padx=18, pady=(4, 10))
 
-        # Right Column: Status & Action
-        form_right = ctk.CTkFrame(form_outer, fg_color="transparent")
-        form_right.grid(row=0, column=1, padx=(10, 20), pady=20, sticky="nsew")
-        form_right.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            form_right,
-            text="Biometric Enrollment Action",
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-            text_color=PALETTE["text_primary"]
-        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
-
-        self.reg_status_frame = ctk.CTkFrame(
-            form_right, corner_radius=10,
-            fg_color=PALETTE["bg_sidebar"],
-            border_width=1, border_color=PALETTE["border"]
-        )
-        self.reg_status_frame.grid(row=1, column=0, sticky="ew", pady=(0, 16))
-
-        self.reg_status_icon = ctk.CTkLabel(self.reg_status_frame, text="📋", font=ctk.CTkFont(size=32))
-        self.reg_status_icon.pack(pady=(20, 4))
-
-        self.reg_status_lbl = ctk.CTkLabel(
-            self.reg_status_frame,
-            text="Fill in student details\nand click 'Open Camera & Capture'",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+        self.reg_capture_status_lbl = ctk.CTkLabel(
+            status_box,
+            text="⚪ Face not captured yet.\nAlign face in camera and click 'Capture Face'.",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
             text_color=PALETTE["text_secondary"],
             justify="center"
         )
-        self.reg_status_lbl.pack(pady=(0, 20), padx=16)
+        self.reg_capture_status_lbl.pack(padx=10, pady=8)
+
+        # Action Buttons inside form card
+        btn_box = ctk.CTkFrame(form_card, fg_color="transparent")
+        btn_box.pack(fill="x", padx=18, pady=(0, 14))
 
         self.reg_capture_btn = ctk.CTkButton(
-            form_right,
-            text="📸  Open Camera & Capture",
-            height=44,
-            corner_radius=10,
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            btn_box,
+            text="📸 Capture Face",
+            height=38,
+            corner_radius=8,
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
             fg_color=PALETTE["accent_blue"],
             hover_color=PALETTE["accent_blue_hover"],
             text_color="#ffffff",
-            command=self._on_reg_open_camera
+            command=self._on_reg_capture_face
         )
-        self.reg_capture_btn.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        self.reg_capture_btn.pack(fill="x", pady=(0, 6))
+
+        self.reg_submit_btn = ctk.CTkButton(
+            btn_box,
+            text="💾 Register Student",
+            height=38,
+            corner_radius=8,
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            fg_color=PALETTE["success_green"],
+            hover_color="#0d9268",
+            text_color="#ffffff",
+            command=self._on_reg_save_student
+        )
+        self.reg_submit_btn.pack(fill="x", pady=(0, 6))
 
         ctk.CTkButton(
-            form_right,
-            text="🗑  Clear Form",
-            height=36,
+            btn_box,
+            text="🗑 Clear Form",
+            height=32,
             corner_radius=8,
             font=ctk.CTkFont(family="Segoe UI", size=12),
             fg_color=PALETTE["btn_neutral"],
             hover_color=PALETTE["btn_neutral_hover"],
             text_color=PALETTE["text_secondary"],
             command=self._on_reg_clear
-        ).grid(row=3, column=0, sticky="ew")
+        ).pack(fill="x")
+
+        # 3. Bottom Row: Back Button
+        bot_bar = ctk.CTkFrame(frame, fg_color="transparent")
+        bot_bar.grid(row=2, column=0, padx=22, pady=(10, 16), sticky="ew")
+
+        ctk.CTkButton(
+            bot_bar,
+            text="⬅ Back to Dashboard",
+            width=160,
+            height=38,
+            corner_radius=8,
+            fg_color=PALETTE["btn_neutral"],
+            hover_color=PALETTE["btn_neutral_hover"],
+            text_color=PALETTE["text_primary"],
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            command=lambda: self._show_view("dashboard")
+        ).pack(side="left")
 
         return frame
 
-    def _on_reg_clear(self) -> None:
-        self.reg_id_entry.delete(0, tk.END)
-        self.reg_name_entry.delete(0, tk.END)
-        self.reg_class_entry.delete(0, tk.END)
-        self.reg_bus_custom_entry.delete(0, tk.END)
-        self.reg_cam_entry.delete(0, tk.END)
-        self.reg_cam_entry.insert(0, "0")
-        self.reg_status_icon.configure(text="📋")
-        self.reg_status_lbl.configure(
-            text="Fill in student details\nand click 'Open Camera & Capture'",
-            text_color=PALETTE["text_secondary"]
+    def _on_reg_capture_face(self) -> None:
+        """Capture the current face embedding from the live camera stream."""
+        with self._camera_lock:
+            faces = list(self._latest_reg_faces)
+            ready = self._latest_reg_ready
+
+        if not ready or len(faces) != 1:
+            messagebox.showwarning("Face Required", "Exactly 1 face must be visible in the camera to capture.", parent=self)
+            return
+
+        self._reg_captured_embedding = faces[0].embedding
+        self.reg_capture_status_lbl.configure(
+            text="✅ Biometric face template captured!\nReady to register student.",
+            text_color=PALETTE["success_green"]
         )
 
-    def _on_reg_open_camera(self) -> None:
-        """Validate form fields and reject duplicate ID, then open the camera capture dialog."""
+    def _on_reg_save_student(self) -> None:
+        """Validate student details form, verify biometrics, check duplicates, and register."""
         student_id = self.reg_id_entry.get().strip()
         name = self.reg_name_entry.get().strip()
         class_name = self.reg_class_entry.get().strip()
         custom_bus = self.reg_bus_custom_entry.get().strip()
         bus_id = custom_bus if custom_bus else self.reg_bus_menu.get().strip()
-        cam_idx_str = self.reg_cam_entry.get().strip()
 
         if not student_id:
-            messagebox.showerror("Missing Field", "Student ID is required.")
+            messagebox.showerror("Missing Field", "Student ID is required.", parent=self)
             return
         if not name:
-            messagebox.showerror("Missing Field", "Full Name is required.")
+            messagebox.showerror("Missing Field", "Full Name is required.", parent=self)
             return
         if not class_name:
-            messagebox.showerror("Missing Field", "Class / Grade is required.")
+            messagebox.showerror("Missing Field", "Class / Grade is required.", parent=self)
             return
         if not bus_id:
-            messagebox.showerror("Missing Field", "Assigned Bus is required.")
+            messagebox.showerror("Missing Field", "Assigned Bus is required.", parent=self)
             return
 
-        try:
-            cam_idx = int(cam_idx_str)
-        except ValueError:
-            messagebox.showerror("Invalid Camera", "Camera device index must be an integer (e.g. 0).")
-            return
-
-        # STRICT DUPLICATE CHECK: As required by Test 7, reject duplicate ID and do not overwrite existing student!
+        # STRICT DUPLICATE CHECK: As required, reject duplicate ID and do not overwrite existing student!
         existing = self.db.get_student_by_id(student_id)
         if existing:
             messagebox.showerror(
@@ -2820,32 +3220,87 @@ class AttendanceDashboard(ctk.CTk):
             )
             return
 
-        self.reg_status_icon.configure(text="📷")
-        self.reg_status_lbl.configure(text="Opening camera...\nWaiting for face capture.", text_color=PALETTE["warning_amber"])
-        self.update()
+        # Check embedding
+        embedding = self._reg_captured_embedding
+        if embedding is None:
+            with self._camera_lock:
+                if self._latest_reg_ready and len(self._latest_reg_faces) == 1:
+                    embedding = self._latest_reg_faces[0].embedding
 
-        reg_dialog = RegistrationCameraDialog(
-            parent=self,
+            if embedding is None:
+                messagebox.showwarning(
+                    "Face Capture Required",
+                    "Please look at the camera and click 'Capture Face' before registering.",
+                    parent=self
+                )
+                return
+
+        ok = self.db.register_student(
             student_id=student_id,
             name=name,
             class_name=class_name,
             bus_id=bus_id,
-            camera_index=cam_idx,
-            db=self.db
+            face_embedding=embedding
         )
-        self.wait_window(reg_dialog)
-
-        if reg_dialog.success:
-            self.reg_status_icon.configure(text="✅")
-            self.reg_status_lbl.configure(
-                text=f"Student registered successfully!\n{name} ({student_id})\nBus: {bus_id}",
-                text_color=PALETTE["success_green"]
+        if ok:
+            messagebox.showinfo(
+                "Registration Successful",
+                f"Student '{name}' ({student_id}) enrolled successfully!\nAssigned to: {bus_id}",
+                parent=self
             )
+            self._reg_captured_embedding = None
+            self._on_reg_clear()
             self.refresh_students_data()
             self.refresh_dashboard_data()
         else:
-            self.reg_status_icon.configure(text="❌")
-            self.reg_status_lbl.configure(text="Registration cancelled\nor failed. Try again.", text_color=PALETTE["danger_red"])
+            messagebox.showerror("Save Failed", "Failed to save student record to database.", parent=self)
+
+    def _on_reg_clear(self) -> None:
+        """Clear the registration form and reset biometric template state."""
+        self.reg_id_entry.delete(0, tk.END)
+        self.reg_name_entry.delete(0, tk.END)
+        self.reg_class_entry.delete(0, tk.END)
+        self.reg_bus_custom_entry.delete(0, tk.END)
+        self._reg_captured_embedding = None
+        if hasattr(self, "reg_capture_status_lbl"):
+            self.reg_capture_status_lbl.configure(
+                text="⚪ Face not captured yet.\nAlign face in camera and click 'Capture Face'.",
+                text_color=PALETTE["text_secondary"]
+            )
+
+    def _on_select_photo_file(self) -> None:
+        """Allow administrator to select a photo file if camera is offline."""
+        file_path = filedialog.askopenfilename(
+            parent=self,
+            title="Select Student Photo for Biometric Enrollment",
+            filetypes=[("Image files", "*.jpg;*.jpeg;*.png"), ("All files", "*.*")]
+        )
+        if not file_path:
+            return
+
+        try:
+            recognizer = self.get_face_recognizer()
+            img = cv2.imread(file_path)
+            if img is None:
+                messagebox.showerror("Error", "Could not load image file.", parent=self)
+                return
+
+            faces = recognizer.extract_faces(img)
+            if len(faces) == 0:
+                messagebox.showerror("No Face Found", "No face was detected in the selected image.", parent=self)
+                return
+            if len(faces) > 1:
+                messagebox.showerror("Multiple Faces", f"Found {len(faces)} faces. Exactly 1 face required.", parent=self)
+                return
+
+            self._reg_captured_embedding = faces[0].embedding
+            self.reg_capture_status_lbl.configure(
+                text=f"✅ Biometrics loaded from file:\n{os.path.basename(file_path)}",
+                text_color=PALETTE["success_green"]
+            )
+            messagebox.showinfo("Face Extracted", "Face biometric template successfully extracted from photo file!", parent=self)
+        except Exception as e:
+            messagebox.showerror("Extraction Error", f"Failed to extract face template:\n{e}", parent=self)
 
     # =========================================================================
     # VIEW 7: SETTINGS & MAINTENANCE
@@ -3049,6 +3504,8 @@ class AttendanceDashboard(ctk.CTk):
                 self.after_cancel(self._refresh_job)
             except Exception:
                 pass
+
+        self._stop_embedded_camera()
 
         if self._camera_process is not None and self._camera_process.poll() is None:
             try:

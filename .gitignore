@@ -6,3 +6,5 @@ data/*.db
 .vscode/
 .idea/
 *.log
+build/
+dist/

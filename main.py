@@ -254,7 +254,8 @@ def run(
         print_attendance_summary(attendance_engine)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """CLI entry point — parse arguments and launch the attendance engine."""
     parser = argparse.ArgumentParser(
         description="School Bus Attendance System - Part 3: Automatic Attendance Engine"
     )
@@ -304,3 +305,7 @@ if __name__ == "__main__":
         required_confirmations=args.confirmations,
         confirmation_window=args.window
     )
+
+
+if __name__ == "__main__":
+    main()

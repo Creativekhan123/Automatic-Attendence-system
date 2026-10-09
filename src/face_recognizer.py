@@ -6,12 +6,14 @@ import numpy as np
 # Suppress scikit-image FutureWarning from InsightFace face_align
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+_insightface_import_error = None
 try:
     import insightface
     from insightface.app import FaceAnalysis
-except ImportError:
+except Exception as _e:
     insightface = None
     FaceAnalysis = None
+    _insightface_import_error = _e
 
 
 class FaceRecognizer:
@@ -34,8 +36,10 @@ class FaceRecognizer:
             similarity_threshold: Cosine similarity cutoff for identity verification (0.0 to 1.0).
         """
         if FaceAnalysis is None:
+            cause = f" Cause: {_insightface_import_error}" if _insightface_import_error else ""
             raise ImportError(
-                "InsightFace is not installed. Please run: pip install insightface onnxruntime"
+                f"InsightFace failed to load.{cause}\n"
+                "If running from source: pip install insightface onnxruntime"
             )
 
         self.model_name = model_name
