@@ -574,6 +574,40 @@ class TestStudentDeletionAndIdReuse(unittest.TestCase):
         # Historical attendance record remains in database
         self.assertEqual(self.db.get_student_attendance_count(stu_id), 1)
 
+    def test_delete_student_with_legacy_not_null_face_embedding(self):
+        """Deleting a student from a legacy table with NOT NULL constraint on face_embedding succeeds."""
+        with self.db._get_connection() as conn:
+            conn.execute("DROP TABLE IF EXISTS students")
+            conn.execute("""
+                CREATE TABLE students (
+                    student_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    class_name TEXT NOT NULL,
+                    bus_id TEXT NOT NULL,
+                    face_embedding BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT,
+                    sync_status TEXT NOT NULL DEFAULT 'synced',
+                    synced_at TEXT
+                )
+            """)
+            conn.commit()
+
+        emb = np.ones(512, dtype=np.float32)
+        stu_id = "LEGACY_01"
+        self.db.register_student(stu_id, "Legacy Student", "5A", "BUS01", emb)
+
+        # Deleting student must succeed even with NOT NULL constraint on face_embedding
+        ok = self.db.delete_student(stu_id, soft_delete=True)
+        self.assertTrue(ok)
+
+        # Student is marked inactive and face_embedding is purged (None)
+        stu = self.db.get_student_by_id(stu_id)
+        self.assertIsNotNone(stu)
+        self.assertFalse(stu["is_active"])
+        self.assertIsNone(stu["face_embedding"])
+
 
 if __name__ == "__main__":
     unittest.main()

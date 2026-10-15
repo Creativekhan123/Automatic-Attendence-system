@@ -386,10 +386,19 @@ class Database:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 if soft_delete:
-                    cursor.execute(
-                        "UPDATE students SET is_active = 0, face_embedding = NULL, updated_at = ?, sync_status = 'pending' WHERE student_id = ?",
-                        (datetime.now().isoformat(), student_id)
-                    )
+                    # In some legacy databases, students.face_embedding has a NOT NULL constraint.
+                    # Attempt setting to NULL; if rejected by constraint, fall back to empty bytes b""
+                    # so the biometric vector is securely purged in either schema.
+                    try:
+                        cursor.execute(
+                            "UPDATE students SET is_active = 0, face_embedding = NULL, updated_at = ?, sync_status = 'pending' WHERE student_id = ?",
+                            (datetime.now().isoformat(), student_id)
+                        )
+                    except sqlite3.IntegrityError:
+                        cursor.execute(
+                            "UPDATE students SET is_active = 0, face_embedding = ?, updated_at = ?, sync_status = 'pending' WHERE student_id = ?",
+                            (b"", datetime.now().isoformat(), student_id)
+                        )
                 else:
                     cursor.execute("DELETE FROM students WHERE student_id = ?", (student_id,))
                 conn.commit()
