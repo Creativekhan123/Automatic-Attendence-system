@@ -98,12 +98,23 @@ class SyncWorker:
             self._thread.join(timeout=timeout)
             logger.info("Background synchronization worker stopped.")
 
+    @property
+    def is_running(self) -> bool:
+        """Return True if background sync thread is running."""
+        with self._lock:
+            return self._is_running
+
+    def enable(self) -> None:
+        """Dynamically enable and start the sync worker thread."""
+        self.enabled = True
+        self.start()
+
     def trigger_immediate_sync(self) -> None:
         """Signal the worker thread to perform a sync immediately."""
         self._wake_event.set()
 
     def get_status(self) -> Dict[str, Any]:
-        """Retrieve thread-safe telemetry for UI indicators."""
+        """Retrieve thread-safe telemetry for UI indicators matching: Disabled, Syncing, Pending, Synced, Error."""
         pending_attendance = self.db.get_pending_sync_count()
         pending_students = self.db.get_pending_students_count()
         total_pending = pending_attendance + pending_students
@@ -111,18 +122,31 @@ class SyncWorker:
             if not self.supabase.is_configured():
                 state_text = "Offline Mode (Local SQLite)"
                 badge_color = "#94a3b8"  # Slate neutral
+                status_name = "Disabled"
             elif self._sync_state == "Disabled":
                 state_text = "Cloud sync disabled (Local SQLite)"
                 badge_color = "#94a3b8"  # Slate neutral
+                status_name = "Disabled"
             elif not self._is_online:
                 state_text = f"Offline ({total_pending} pending)" if total_pending else "Offline (No connection)"
                 badge_color = "#ef4444"  # Red
+                status_name = "Error"
+            elif self._sync_state == "Syncing":
+                state_text = f"Syncing ({total_pending} pending)" if total_pending else "Syncing"
+                badge_color = "#3b82f6"  # Blue
+                status_name = "Syncing"
+            elif self._sync_state == "Error":
+                state_text = f"Sync Error ({total_pending} pending)" if total_pending else "Sync Error"
+                badge_color = "#ef4444"  # Red
+                status_name = "Error"
             elif total_pending > 0:
                 state_text = f"Uploading ({total_pending} pending)"
                 badge_color = "#f59e0b"  # Amber
+                status_name = "Pending"
             else:
                 state_text = "Cloud Synced"
                 badge_color = "#10b981"  # Emerald green
+                status_name = "Synced"
 
             return {
                 "is_running": self._is_running,
@@ -134,6 +158,7 @@ class SyncWorker:
                 "last_sync_time": self._last_sync_time,
                 "last_error": self._last_error,
                 "state_text": state_text,
+                "status_name": status_name,
                 "badge_color": badge_color,
             }
 
@@ -191,6 +216,9 @@ class SyncWorker:
             self._consecutive_failures += 1
             return
 
+        with self._lock:
+            self._sync_state = "Syncing"
+
         # 2. Push Pending Local Students (Bus metadata uploaded first, then student metadata)
         students_ok = self._upload_pending_students()
 
@@ -213,9 +241,11 @@ class SyncWorker:
             with self._lock:
                 self._last_sync_time = datetime.now().strftime("%H:%M:%S")
                 self._last_error = None
-                self._sync_state = "Online (Synced)"
+                self._sync_state = "Synced"
         else:
             self._consecutive_failures += 1
+            with self._lock:
+                self._sync_state = "Error"
 
     def _upload_pending_students(self) -> bool:
         """Upload pending local student registrations/updates to Supabase.
@@ -293,7 +323,10 @@ class SyncWorker:
                 "device_id": r.get("device_id"),
             })
 
-        count, uploaded_ids, err = self.supabase.upload_attendance_batch(payload)
+        try:
+            count, uploaded_ids, err = self.supabase.upload_attendance_batch(payload, verify=True)
+        except TypeError:
+            count, uploaded_ids, err = self.supabase.upload_attendance_batch(payload)
 
         # Only events confirmed by the cloud are marked synced
         if uploaded_ids:

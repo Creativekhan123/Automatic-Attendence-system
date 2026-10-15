@@ -3575,8 +3575,21 @@ class AttendanceDashboard(ctk.CTk):
         if hasattr(self, "sync_worker") and hasattr(self, "cloud_sync_lbl"):
             try:
                 st = self.sync_worker.get_status()
+                status_cat = st.get("status_name", "")
+                if status_cat == "Disabled":
+                    label_text = "● Sync: Disabled"
+                elif status_cat == "Syncing":
+                    label_text = f"● Sync: Syncing ({st['pending_count']} pending)" if st.get("pending_count") else "● Sync: Syncing..."
+                elif status_cat == "Pending":
+                    label_text = f"● Sync: Pending ({st['pending_count']} queued)"
+                elif status_cat == "Synced":
+                    label_text = "● Sync: Synced"
+                elif status_cat == "Error":
+                    label_text = f"● Sync: Error ({st['pending_count']} pending)" if st.get("pending_count") else "● Sync: Error"
+                else:
+                    label_text = f"● {st['state_text']}"
                 self.cloud_sync_lbl.configure(
-                    text=f"● {st['state_text']}",
+                    text=label_text,
                     text_color=st["badge_color"]
                 )
             except Exception:
