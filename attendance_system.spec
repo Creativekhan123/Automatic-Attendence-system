@@ -15,11 +15,13 @@ customtkinter_datas = collect_data_files('customtkinter', include_py_files=True)
 insightface_datas   = collect_data_files('insightface',   include_py_files=True)
 onnxruntime_datas   = collect_data_files('onnxruntime')
 
-# Bundle the haarcascade XML and the src package marker
+# Bundle the haarcascade XML, src package marker, and runtime crosswalk if present
 project_datas = [
     ('src/haarcascade_frontalface_default.xml', 'src'),
     ('src/__init__.py',                          'src'),
 ]
+if os.path.exists('id_crosswalk.json'):
+    project_datas.append(('id_crosswalk.json', '.'))
 
 # Bundle the InsightFace buffalo_sc ONNX models so the EXE works offline.
 # The runtime hook copies them to ~/.insightface/models on first launch
@@ -122,12 +124,20 @@ hidden_imports = [
     'src.camera',
     'src.face_detector',
     'src.face_recognizer',
+    'src.supabase_service',
+    'src.sync_worker',
+    'dotenv',
 ]
 
-# Add all insightface and onnxruntime submodules dynamically
+# Add all insightface, onnxruntime, customtkinter, and supabase submodules dynamically
 hidden_imports += collect_submodules('insightface')
 hidden_imports += collect_submodules('onnxruntime')
 hidden_imports += collect_submodules('customtkinter')
+hidden_imports += collect_submodules('supabase')
+hidden_imports += collect_submodules('postgrest')
+hidden_imports += collect_submodules('gotrue')
+hidden_imports += collect_submodules('httpx')
+hidden_imports += collect_submodules('httpcore')
 
 # ─────────────────────────────────────────────
 # Binaries: collect onnxruntime DLLs and also

@@ -1,0 +1,12 @@
+{
+  "_comment": "Explicit local -> cloud identifier crosswalk, applied ONLY at the Supabase sync boundary. Local IDs and embeddings are never rewritten. Identifiers not listed map to themselves.",
+  "students": {
+    "1": "01"
+  },
+  "buses": {
+    "BUS01": "Bus01"
+  },
+  "verified_same_person": {
+    "1": {"name": "Mohd Zeeshan", "class_name": "5A"}
+  }
+}

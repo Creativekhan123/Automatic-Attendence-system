@@ -8,3 +8,6 @@ data/*.db
 *.log
 build/
 dist/
+.env
+*.env
+backups/

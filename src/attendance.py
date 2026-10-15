@@ -1,10 +1,12 @@
 import time
+import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 
 from src.database import Database
 from src.config import (
     DEFAULT_BUS_ID,
+    DEVICE_ID,
     REQUIRED_CONFIRMATIONS,
     CONFIRMATION_WINDOW_SECONDS
 )
@@ -22,7 +24,8 @@ class AttendanceEngine:
         db: Database,
         bus_id: str = DEFAULT_BUS_ID,
         required_confirmations: int = REQUIRED_CONFIRMATIONS,
-        confirmation_window_seconds: float = CONFIRMATION_WINDOW_SECONDS
+        confirmation_window_seconds: float = CONFIRMATION_WINDOW_SECONDS,
+        device_id: str = DEVICE_ID
     ) -> None:
         """Initialize the AttendanceEngine.
 
@@ -31,17 +34,19 @@ class AttendanceEngine:
             bus_id: Identifier of the bus conducting attendance.
             required_confirmations: Number of consistent recognitions required.
             confirmation_window_seconds: Time window in seconds for confirmations.
+            device_id: Hardware device identifier for cloud audit logs.
         """
         self.db = db
         self.bus_id = bus_id
         self.required_confirmations = required_confirmations
         self.confirmation_window_seconds = confirmation_window_seconds
+        self.device_id = device_id
 
         # In-memory tracking of recent recognition observations per student_id
         # Structure: { student_id: [timestamp_1, timestamp_2, ...] }
         self._student_observations: Dict[str, List[float]] = {}
 
-        # Cache of student_ids already marked present for (today_date, bus_id)
+        # Cache of student_ids already marked present today for this bus
         # Allows instantaneous O(1) checks without hitting SQLite on every frame.
         self._marked_cache: set = set()
         self._current_cache_date: str = ""
@@ -114,13 +119,17 @@ class AttendanceEngine:
             # Attempt to commit attendance to database
             attendance_date = self._get_current_date_str()
             attendance_time = self._get_current_time_str()
+            event_id = str(uuid.uuid4())
 
             success = self.db.mark_student_present(
                 student_id=student_id,
                 attendance_date=attendance_date,
                 attendance_time=attendance_time,
                 bus_id=self.bus_id,
-                status="Present"
+                status="Present",
+                event_id=event_id,
+                device_id=self.device_id,
+                sync_status="pending"
             )
 
             if success:
@@ -130,7 +139,11 @@ class AttendanceEngine:
                 return "PRESENT", count, True
             else:
                 # If mark_student_present returned False, it was either duplicate or DB error
-                if self.db.is_student_marked_present(student_id, attendance_date, self.bus_id):
+                if self.db.is_student_marked_present(
+                    student_id=student_id,
+                    attendance_date=attendance_date,
+                    bus_id=self.bus_id
+                ):
                     self._marked_cache.add(student_id)
                     return "ALREADY PRESENT", count, False
                 else:

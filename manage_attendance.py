@@ -30,6 +30,11 @@ def display_today_attendance(db: Database, bus_id: str) -> None:
 
     print("--------------------------------------------------")
     print(f"Present: {total_present} / {total_registered}")
+    pending_sync = db.get_pending_sync_count()
+    if pending_sync > 0:
+        print(f"Cloud Queue: {pending_sync} event(s) pending sync")
+    else:
+        print("Cloud Queue: Up to date (0 pending)")
 
     if not_yet_present:
         print("\nNot Yet Present:")

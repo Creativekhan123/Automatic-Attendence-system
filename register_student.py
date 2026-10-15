@@ -194,6 +194,18 @@ def register_student_cli() -> None:
             print(f" SUCCESS: {name} ({student_id}) registered successfully!")
             print(f" Database: {args.db_path}")
             print("==================================================")
+            try:
+                from src.supabase_service import SupabaseService
+                sb = SupabaseService()
+                if sb.is_configured():
+                    print("Uploading new student profile metadata to Supabase cloud...")
+                    if sb.upsert_student(student_id, name, class_name, bus_id):
+                        if getattr(sb, "biometric_sync_enabled", False):
+                            emb_bytes = db.serialize_embedding(captured_embedding)
+                            sb.upload_student_biometrics(student_id, emb_bytes)
+                        print("Cloud sync: Student metadata uploaded to Supabase successfully!")
+            except Exception as e:
+                print(f"Note: Local student saved, cloud sync deferred: {e}")
         else:
             print("Error: Failed to save student to database.")
     else:

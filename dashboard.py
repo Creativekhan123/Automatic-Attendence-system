@@ -18,6 +18,8 @@ from src.database import Database
 from src.camera import Camera
 from src.attendance import AttendanceEngine
 from src.face_recognizer import FaceRecognizer
+from src.supabase_service import SupabaseService
+from src.sync_worker import SyncWorker
 from src.config import (
     DEFAULT_BUS_ID,
     DEFAULT_DB_PATH,
@@ -212,6 +214,17 @@ class EditStudentDialog(ctk.CTkToplevel):
         )
 
         if success:
+            # Propagate update to Supabase in background thread
+            if hasattr(self.master, "supabase") and self.master.supabase.is_configured():
+                threading.Thread(
+                    target=lambda: self.master.supabase.upsert_student(
+                        self.student["student_id"], new_name, new_class, new_bus, is_active=True
+                    ),
+                    daemon=True
+                ).start()
+                if hasattr(self.master, "sync_worker"):
+                    self.master.sync_worker.trigger_immediate_sync()
+
             messagebox.showinfo("Success", f"Profile for '{new_name}' updated successfully.", parent=self)
             if self.on_saved_callback:
                 self.on_saved_callback()
@@ -866,6 +879,11 @@ class AttendanceDashboard(ctk.CTk):
         self._configure_treeview_styles()
         self._build_main_layout()
 
+        # Cloud Synchronization Manager
+        self.supabase = SupabaseService()
+        self.sync_worker = SyncWorker(db=self.db, supabase_service=self.supabase)
+        self.sync_worker.start()
+
         # Show initial dashboard view
         self._show_view("dashboard")
         self._schedule_auto_refresh()
@@ -1047,6 +1065,15 @@ class AttendanceDashboard(ctk.CTk):
         )
         self.appearance_menu.set(ctk.get_appearance_mode())
         self.appearance_menu.pack(fill="x", pady=(0, 8))
+
+        # Cloud Sync Telemetry Badge
+        self.cloud_sync_lbl = ctk.CTkLabel(
+            footer_frame,
+            text="● Cloud: Initializing...",
+            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+            text_color="#94a3b8"
+        )
+        self.cloud_sync_lbl.pack(anchor="w", pady=(0, 4))
 
         ctk.CTkLabel(
             footer_frame,
@@ -2377,9 +2404,16 @@ class AttendanceDashboard(ctk.CTk):
 
         confirm = messagebox.askyesno("Confirm Deletion", msg, icon="warning")
         if confirm:
-            ok = self.db.delete_student(stu_id)
+            ok = self.db.delete_student(stu_id, soft_delete=True)
             if ok:
-                messagebox.showinfo("Student Deleted", f"Student '{name}' ({stu_id}) was removed.")
+                if hasattr(self, "supabase") and self.supabase.is_configured():
+                    threading.Thread(
+                        target=lambda: self.supabase.upsert_student(
+                            stu_id, name, student["class_name"], student["bus_id"], is_active=False
+                        ),
+                        daemon=True
+                    ).start()
+                messagebox.showinfo("Student Deactivated", f"Student '{name}' ({stu_id}) was removed from active roster.")
                 self.refresh_students_data()
                 self.refresh_dashboard_data()
             else:
@@ -3243,6 +3277,14 @@ class AttendanceDashboard(ctk.CTk):
             face_embedding=embedding
         )
         if ok:
+            # Sync to Supabase in background thread if configured
+            if hasattr(self, "supabase") and self.supabase.is_configured():
+                threading.Thread(
+                    target=self._async_upload_student,
+                    args=(student_id, name, class_name, bus_id, embedding),
+                    daemon=True
+                ).start()
+
             messagebox.showinfo(
                 "Registration Successful",
                 f"Student '{name}' ({student_id}) enrolled successfully!\nAssigned to: {bus_id}",
@@ -3254,6 +3296,19 @@ class AttendanceDashboard(ctk.CTk):
             self.refresh_dashboard_data()
         else:
             messagebox.showerror("Save Failed", "Failed to save student record to database.", parent=self)
+
+    def _async_upload_student(self, student_id: str, name: str, class_name: str, bus_id: str, embedding: np.ndarray) -> None:
+        """Asynchronously upload student metadata and biometrics to Supabase."""
+        try:
+            if hasattr(self, "supabase") and self.supabase.is_configured():
+                self.supabase.upsert_student(student_id, name, class_name, bus_id, is_active=True)
+                if getattr(self.supabase, "biometric_sync_enabled", False):
+                    emb_bytes = self.db.serialize_embedding(embedding)
+                    self.supabase.upload_student_biometrics(student_id, emb_bytes)
+                if hasattr(self, "sync_worker"):
+                    self.sync_worker.trigger_immediate_sync()
+        except Exception as e:
+            print(f"Async cloud upload note for student {student_id}: {e}")
 
     def _on_reg_clear(self) -> None:
         """Clear the registration form and reset biometric template state."""
@@ -3495,10 +3550,27 @@ class AttendanceDashboard(ctk.CTk):
         except Exception:
             pass
 
+        # Update cloud sync telemetry badge
+        if hasattr(self, "sync_worker") and hasattr(self, "cloud_sync_lbl"):
+            try:
+                st = self.sync_worker.get_status()
+                self.cloud_sync_lbl.configure(
+                    text=f"● {st['state_text']}",
+                    text_color=st["badge_color"]
+                )
+            except Exception:
+                pass
+
         self._refresh_job = self.after(self.auto_refresh_ms, self._schedule_auto_refresh)
 
     def destroy(self) -> None:
         """Clean up background processes and resources on application exit."""
+        if hasattr(self, "sync_worker") and self.sync_worker:
+            try:
+                self.sync_worker.stop()
+            except Exception:
+                pass
+
         if self._refresh_job:
             try:
                 self.after_cancel(self._refresh_job)
