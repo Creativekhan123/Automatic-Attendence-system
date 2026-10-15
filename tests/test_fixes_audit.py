@@ -505,5 +505,76 @@ class TestMigrationAndRollbackScripts(unittest.TestCase):
         self.assertNotIn("DELETE FROM", sql)
 
 
+
+class TestStudentDeletionAndIdReuse(unittest.TestCase):
+    """Verify that deleting a student purges biometrics, allows ID reuse, and retains attendance history."""
+
+    def setUp(self):
+        self.temp_db_fd, self.temp_db_path = tempfile.mkstemp(suffix=".db")
+        os.close(self.temp_db_fd)
+        self.db = Database(db_path=self.temp_db_path)
+
+    def tearDown(self):
+        if os.path.exists(self.temp_db_path):
+            try:
+                os.remove(self.temp_db_path)
+            except OSError:
+                pass
+
+    def test_deleted_student_biometrics_cleared_and_id_reusable(self):
+        """Deleting a student clears biometrics and marks inactive; same ID can then be reused."""
+        emb1 = np.ones(512, dtype=np.float32)
+        stu_id = "STU_REUSE_01"
+
+        # 1. Register student Alice
+        self.db.register_student(stu_id, "Alice Old", "5A", "BUS01", emb1)
+        alice = self.db.get_student_by_id(stu_id)
+        self.assertIsNotNone(alice)
+        self.assertTrue(alice["is_active"])
+        self.assertIsNotNone(alice["face_embedding"])
+
+        # 2. Add an attendance record
+        self.db.mark_student_present(stu_id, "2026-10-15", "08:00:00", "BUS01", "Present", "eid-hist-1", "DEV-1")
+        self.assertEqual(self.db.get_student_attendance_count(stu_id), 1)
+
+        # 3. Delete student Alice (soft_delete=True)
+        ok_del = self.db.delete_student(stu_id, soft_delete=True)
+        self.assertTrue(ok_del)
+
+        # 4. Verify Alice is inactive and biometric face embedding is wiped
+        alice_del = self.db.get_student_by_id(stu_id, active_only=False)
+        self.assertIsNotNone(alice_del)
+        self.assertFalse(alice_del["is_active"])
+        self.assertIsNone(alice_del["face_embedding"])  # Biometric purged
+
+        # Active-only query must return None
+        self.assertIsNone(self.db.get_student_by_id(stu_id, active_only=True))
+
+        # Active students list must NOT contain deleted student
+        active_list = self.db.get_all_students(active_only=True)
+        self.assertFalse(any(s["student_id"] == stu_id for s in active_list))
+
+        # Historical attendance records must be preserved
+        self.assertEqual(self.db.get_student_attendance_count(stu_id), 1)
+
+        # 5. Reuse the ID for Bob
+        emb2 = np.zeros(512, dtype=np.float32)
+        ok_reg = self.db.register_student(stu_id, "Bob New", "6B", "BUS02", emb2)
+        self.assertTrue(ok_reg)
+
+        # 6. Verify Bob is now the active owner of that ID
+        bob = self.db.get_student_by_id(stu_id, active_only=True)
+        self.assertIsNotNone(bob)
+        self.assertTrue(bob["is_active"])
+        self.assertEqual(bob["name"], "Bob New")
+        self.assertEqual(bob["class_name"], "6B")
+        self.assertEqual(bob["bus_id"], "BUS02")
+        self.assertIsNotNone(bob["face_embedding"])
+
+        # Historical attendance record remains in database
+        self.assertEqual(self.db.get_student_attendance_count(stu_id), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
+

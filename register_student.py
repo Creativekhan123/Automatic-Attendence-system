@@ -60,10 +60,16 @@ def register_student_cli() -> None:
     # Check if student already exists in database
     db = Database(db_path=args.db_path)
     existing = db.get_student_by_id(student_id)
-    if existing:
-        print(f"\nWarning: Student ID '{student_id}' already registered for '{existing['name']}'.")
+    if existing and existing.get("is_active", True):
+        print(f"\nWarning: Student ID '{student_id}' is already registered for active student '{existing['name']}'.")
         overwrite = input("Do you want to update/overwrite their face embedding? (y/N): ").strip().lower()
         if overwrite not in ("y", "yes"):
+            print("Registration cancelled.")
+            return
+    elif existing and not existing.get("is_active", True):
+        print(f"\nNote: Student ID '{student_id}' belonged to a deleted student ('{existing['name']}').")
+        reassign = input(f"Do you want to reassign this ID to '{name}'? (Y/n): ").strip().lower()
+        if reassign in ("n", "no"):
             print("Registration cancelled.")
             return
 

@@ -1314,6 +1314,8 @@ class AttendanceDashboard(ctk.CTk):
                             time.time() + NOTIFICATION_DURATION_SECONDS,
                             False
                         )
+                        if hasattr(self, "sync_worker"):
+                            self.sync_worker.trigger_immediate_sync()
 
                     if status in ("PRESENT", "ALREADY PRESENT"):
                         box_color = (0, 255, 0)
@@ -3242,17 +3244,35 @@ class AttendanceDashboard(ctk.CTk):
             messagebox.showerror("Missing Field", "Assigned Bus is required.", parent=self)
             return
 
-        # STRICT DUPLICATE CHECK: As required, reject duplicate ID and do not overwrite existing student!
+        # DUPLICATE CHECK: Reject duplicate ID only if currently active!
         existing = self.db.get_student_by_id(student_id)
-        if existing:
+        if existing and existing.get("is_active", True):
             messagebox.showerror(
                 "Student ID Already Exists",
-                f"Student ID '{student_id}' is already registered to '{existing['name']}' ({existing.get('class_name', '')}).\n\n"
-                f"Registration rejected. Duplicate Student IDs are not permitted.\n"
+                f"Student ID '{student_id}' is currently active and assigned to '{existing['name']}' ({existing.get('class_name', '')}).\n\n"
+                f"Registration rejected. Duplicate Student IDs are not permitted for active students.\n"
                 f"To update this student's profile, edit them in the Student Directory.",
                 parent=self
             )
             return
+        elif existing and not existing.get("is_active", True):
+            att_count = self.db.get_student_attendance_count(student_id)
+            if att_count > 0:
+                reclaim_msg = (
+                    f"Student ID '{student_id}' previously belonged to '{existing['name']}' (Deleted) "
+                    f"and has {att_count} historical attendance records.\n\n"
+                    f"Reassigning this ID will associate future attendance with '{name}' ({class_name}). "
+                    f"Historical audit records will be retained.\n\n"
+                    f"Do you want to reassign this Student ID?"
+                )
+            else:
+                reclaim_msg = (
+                    f"Student ID '{student_id}' previously belonged to '{existing['name']}' (Deleted).\n\n"
+                    f"Do you want to reassign this Student ID to '{name}' ({class_name})?"
+                )
+            reclaim = messagebox.askyesno("Reuse Student ID", reclaim_msg, icon="question", parent=self)
+            if not reclaim:
+                return
 
         # Check embedding
         embedding = self._reg_captured_embedding
@@ -3301,6 +3321,7 @@ class AttendanceDashboard(ctk.CTk):
         """Asynchronously upload student metadata and biometrics to Supabase."""
         try:
             if hasattr(self, "supabase") and self.supabase.is_configured():
+                self.supabase.ensure_bus(bus_id)
                 self.supabase.upsert_student(student_id, name, class_name, bus_id, is_active=True)
                 if getattr(self.supabase, "biometric_sync_enabled", False):
                     emb_bytes = self.db.serialize_embedding(embedding)

@@ -305,16 +305,25 @@ class Database:
             return all_students
         return [s for s in all_students if s.get("bus_id") == bus_id]
 
-    def get_student_by_id(self, student_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve a specific student by student_id."""
+    def get_student_by_id(self, student_id: str, active_only: bool = False) -> Optional[Dict[str, Any]]:
+        """Retrieve a specific student by student_id.
+
+        Args:
+            student_id: Unique student ID.
+            active_only: If True, only returns the student if is_active == 1.
+                         If False (default), returns the record even if inactive/soft-deleted.
+        """
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                query = """
                     SELECT student_id, name, class_name, bus_id, face_embedding, is_active, created_at
                     FROM students
                     WHERE student_id = ?
-                """, (student_id,))
+                """
+                if active_only:
+                    query += " AND is_active = 1"
+                cursor.execute(query, (student_id,))
                 row = cursor.fetchone()
                 if row:
                     raw_emb = row["face_embedding"]
@@ -378,7 +387,7 @@ class Database:
                 cursor = conn.cursor()
                 if soft_delete:
                     cursor.execute(
-                        "UPDATE students SET is_active = 0, updated_at = ?, sync_status = 'pending' WHERE student_id = ?",
+                        "UPDATE students SET is_active = 0, face_embedding = NULL, updated_at = ?, sync_status = 'pending' WHERE student_id = ?",
                         (datetime.now().isoformat(), student_id)
                     )
                 else:
