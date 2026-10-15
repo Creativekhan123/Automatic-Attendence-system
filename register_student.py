@@ -199,11 +199,15 @@ def register_student_cli() -> None:
                 sb = SupabaseService()
                 if sb.is_configured():
                     print("Uploading new student profile metadata to Supabase cloud...")
+                    # Ensure parent bus exists in the cloud to satisfy foreign key constraint
+                    sb.ensure_bus(bus_id)
                     if sb.upsert_student(student_id, name, class_name, bus_id):
                         if getattr(sb, "biometric_sync_enabled", False):
                             emb_bytes = db.serialize_embedding(captured_embedding)
                             sb.upload_student_biometrics(student_id, emb_bytes)
                         print("Cloud sync: Student metadata uploaded to Supabase successfully!")
+                    else:
+                        print(f"Note: Local student saved, cloud sync deferred: {sb._last_error}")
             except Exception as e:
                 print(f"Note: Local student saved, cloud sync deferred: {e}")
         else:
