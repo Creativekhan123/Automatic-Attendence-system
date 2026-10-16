@@ -45,9 +45,21 @@ class DeviceSyncWorker:
         self.active_students_count = 0
 
     def update_bus_id(self, new_bus_id: str) -> None:
-        """Dynamically update assigned bus_id and trigger sync."""
+        """Dynamically update assigned bus_id and register with Supabase cloud."""
+        clean_bus = new_bus_id.strip()
         with self._lock:
-            self.bus_id = new_bus_id.strip()
+            self.bus_id = clean_bus
+
+        # Auto-register this bus in Supabase so Manager App can immediately discover it
+        def _register():
+            try:
+                if self.cloud.is_configured():
+                    self.cloud.ensure_bus(clean_bus)
+                    logger.info(f"Bus '{clean_bus}' successfully registered in Supabase.")
+            except Exception as e:
+                logger.warning(f"Could not auto-register bus '{clean_bus}' in cloud: {e}")
+
+        threading.Thread(target=_register, daemon=True).start()
         self.trigger_immediate_sync()
 
     def start(self) -> None:
@@ -116,6 +128,12 @@ class DeviceSyncWorker:
 
         with self._lock:
             self.is_online = True
+
+        # 1.5 Ensure current Bus ID exists in Supabase so Manager App has it in bus dropdowns
+        try:
+            self.cloud.ensure_bus(self.bus_id)
+        except Exception as e:
+            logger.debug(f"ensure_bus check error: {e}")
 
         # 2. Pull roster updates (Download assigned students for this bus)
         try:

@@ -16,7 +16,7 @@ import threading
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 import customtkinter as ctk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, simpledialog
 from PIL import Image
 import cv2
 import numpy as np
@@ -153,7 +153,7 @@ class AttendanceManagerApp(ctk.CTk):
         # Header Row
         hdr_frame = ctk.CTkFrame(self.att_scroll, fg_color="#242938", height=35)
         hdr_frame.pack(fill="x", pady=2)
-        cols = [("Time", 90), ("Date", 100), ("Student ID", 90), ("Student Name", 160), ("Bus ID", 90), ("Device", 120), ("Status", 80)]
+        cols = [("Time", 90), ("Date", 100), ("Student ID", 100), ("Student Name", 180), ("Bus ID", 100), ("Status", 90)]
         for col_name, w in cols:
             lbl = ctk.CTkLabel(hdr_frame, text=col_name, width=w, font=ctk.CTkFont(weight="bold"))
             lbl.pack(side="left", padx=5, pady=5)
@@ -179,11 +179,10 @@ class AttendanceManagerApp(ctk.CTk):
 
             ctk.CTkLabel(row_frame, text=r.get("attendance_time", ""), width=90).pack(side="left", padx=5)
             ctk.CTkLabel(row_frame, text=r.get("attendance_date", ""), width=100).pack(side="left", padx=5)
-            ctk.CTkLabel(row_frame, text=sid, width=90, font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5)
-            ctk.CTkLabel(row_frame, text=sname, width=160, anchor="w").pack(side="left", padx=5)
-            ctk.CTkLabel(row_frame, text=r.get("bus_id", ""), width=90).pack(side="left", padx=5)
-            ctk.CTkLabel(row_frame, text=r.get("device_id", "--"), width=120, text_color="#94a3b8").pack(side="left", padx=5)
-            status_lbl = ctk.CTkLabel(row_frame, text=r.get("status", "Present"), width=80, text_color="#10b981")
+            ctk.CTkLabel(row_frame, text=sid, width=100, font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5)
+            ctk.CTkLabel(row_frame, text=sname, width=180, anchor="w").pack(side="left", padx=5)
+            ctk.CTkLabel(row_frame, text=r.get("bus_id", ""), width=100).pack(side="left", padx=5)
+            status_lbl = ctk.CTkLabel(row_frame, text=r.get("status", "Present"), width=90, text_color="#10b981")
             status_lbl.pack(side="left", padx=5)
 
         self.kpi_lbl.configure(text=f"Total Present: {present_count}")
@@ -206,16 +205,27 @@ class AttendanceManagerApp(ctk.CTk):
         )
         goto_register_btn.pack(side="left", padx=15, pady=10)
 
-        ctk.CTkLabel(ctrl, text="Filter Bus:").pack(side="left", padx=(20, 5))
+        ctk.CTkLabel(ctrl, text="Filter Bus:").pack(side="left", padx=(15, 5))
         self.stu_bus_filter_var = ctk.StringVar(value="All Buses")
         self.stu_bus_combo = ctk.CTkComboBox(
             ctrl,
             variable=self.stu_bus_filter_var,
             values=["All Buses"],
-            width=130,
+            width=120,
             command=lambda _: self.render_students_table()
         )
         self.stu_bus_combo.pack(side="left", padx=5)
+
+        add_bus_btn = ctk.CTkButton(
+            ctrl,
+            text="🚌 Add Bus",
+            width=90,
+            fg_color="#334155",
+            hover_color="#475569",
+            font=ctk.CTkFont(weight="bold"),
+            command=self.prompt_add_new_bus
+        )
+        add_bus_btn.pack(side="left", padx=5)
 
         ctk.CTkLabel(ctrl, text="Search:").pack(side="left", padx=(15, 5))
         self.search_entry = ctk.CTkEntry(ctrl, placeholder_text="ID or Name...", width=160)
@@ -307,6 +317,21 @@ class AttendanceManagerApp(ctk.CTk):
         if ok:
             self.refresh_all_data()
 
+    def prompt_add_new_bus(self) -> None:
+        """Prompt manager to manually register a new bus in Supabase cloud."""
+        new_bus = simpledialog.askstring("Add School Bus", "Enter New Bus ID (e.g. Bus02, Bus03):", parent=self)
+        if new_bus and new_bus.strip():
+            clean_b = new_bus.strip()
+            self.status_lbl.configure(text=f"Registering {clean_b} to Supabase...", text_color="#fbbf24")
+            def _async_add():
+                ok = self.cloud.ensure_bus(clean_b)
+                if ok:
+                    self.after(0, lambda: messagebox.showinfo("Bus Registered", f"Bus '{clean_b}' registered successfully in Supabase!"))
+                    self.refresh_all_data()
+                else:
+                    self.after(0, lambda: messagebox.showerror("Cloud Error", f"Failed to register bus: {self.cloud._last_error}"))
+            threading.Thread(target=_async_add, daemon=True).start()
+
     def delete_student_permanently(self, student_id: str, student_name: str) -> None:
         """Delete student from both local SQLite database and Supabase cloud."""
         confirm = messagebox.askyesno(
@@ -367,9 +392,9 @@ class AttendanceManagerApp(ctk.CTk):
         self.reg_class_entry = ctk.CTkEntry(left_form, placeholder_text="e.g. 5A", height=35)
         self.reg_class_entry.pack(fill="x", padx=20, pady=(0, 8))
 
-        ctk.CTkLabel(left_form, text="Assign Bus ID:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=20, pady=(6, 2))
+        ctk.CTkLabel(left_form, text="Assign Bus ID (Select or Type):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=20, pady=(6, 2))
         self.reg_bus_var = ctk.StringVar(value="Bus01")
-        self.reg_bus_menu = ctk.CTkOptionMenu(left_form, variable=self.reg_bus_var, values=["Bus01"], height=35)
+        self.reg_bus_menu = ctk.CTkComboBox(left_form, variable=self.reg_bus_var, values=["Bus01"], height=35)
         self.reg_bus_menu.pack(fill="x", padx=20, pady=(0, 20))
 
         # Instructions card
@@ -717,14 +742,27 @@ class AttendanceManagerApp(ctk.CTk):
         self.after(0, self._update_ui_after_fetch)
 
     def _update_ui_after_fetch(self) -> None:
-        # Update bus dropdown options
-        bus_names = ["All Buses"] + [b["bus_id"] for b in self.buses]
+        # Discover all unique bus IDs from buses table + students + attendance records
+        distinct_buses = set(b["bus_id"] for b in self.buses if b.get("bus_id"))
+        for s in self.students:
+            if s.get("bus_id"):
+                distinct_buses.add(str(s["bus_id"]).strip())
+        for r in self.attendance_records:
+            if r.get("bus_id"):
+                distinct_buses.add(str(r["bus_id"]).strip())
+
+        sorted_buses = sorted(list(distinct_buses))
+        if not sorted_buses:
+            sorted_buses = ["Bus01"]
+
+        bus_names = ["All Buses"] + sorted_buses
+
+        # Update filter dropdowns
         self.bus_combo.configure(values=bus_names)
         self.stu_bus_combo.configure(values=bus_names)
 
         # Update bus options in registration form
-        clean_bus_ids = [b["bus_id"] for b in self.buses] or ["Bus01"]
-        self.reg_bus_menu.configure(values=clean_bus_ids)
+        self.reg_bus_menu.configure(values=sorted_buses)
 
         self.status_lbl.configure(
             text=f"Connected to Cloud | Last sync: {time.strftime('%H:%M:%S')}",

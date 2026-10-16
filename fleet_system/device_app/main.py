@@ -58,9 +58,8 @@ class AttendanceDeviceApp:
         # Initialize local storage
         self.db = DeviceDatabase(db_path=self.db_path)
 
-        # Load persistent Bus ID and Device ID if saved locally (CLI overrides default)
+        # Load persistent Bus ID if saved locally (CLI overrides default)
         saved_bus = self.db.get_config("bus_id", "")
-        saved_device = self.db.get_config("device_id", "")
 
         # If user passed a non-default CLI bus_id, save and use it; otherwise use saved config
         if bus_id != "Bus01" or not saved_bus:
@@ -69,14 +68,9 @@ class AttendanceDeviceApp:
         else:
             self.bus_id = saved_bus.strip()
 
-        if device_id:
-            self.device_id = device_id.strip()
-            self.db.set_config("device_id", self.device_id)
-        elif saved_device:
-            self.device_id = saved_device.strip()
-        else:
-            self.device_id = f"{self.bus_id}_DEV_01"
-            self.db.set_config("device_id", self.device_id)
+        # Device ID is always identical to Bus ID
+        self.device_id = self.bus_id
+        self.db.set_config("device_id", self.device_id)
 
         # Auto-detect headless mode on Linux if no display is available
         if not self.headless and sys.platform != "win32":
@@ -210,7 +204,7 @@ class AttendanceDeviceApp:
         # Top Bar: Bus info & Presence
         cv2.rectangle(frame, (0, 0), (w, 42), (20, 24, 33), -1)
         top_txt = (
-            f"BUS: {self.bus_id} | DEV: {self.device_id} | "
+            f"BUS: {self.bus_id} | "
             f"PRESENT: {stats['total_present']}/{stats['total_assigned']}"
         )
         cv2.putText(frame, top_txt, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
@@ -241,7 +235,7 @@ class AttendanceDeviceApp:
             )
 
     def prompt_reconfigure_device(self) -> None:
-        """Prompt administrator in a safe Tkinter popup to change Bus ID / Device ID with confirmation."""
+        """Prompt administrator in a safe Tkinter popup to change Bus ID with confirmation."""
         import tkinter as tk
         from tkinter import simpledialog, messagebox
 
@@ -261,25 +255,13 @@ class AttendanceDeviceApp:
             return
 
         new_bus = new_bus.strip()
-        default_dev = f"{new_bus}_DEV_01"
-        new_dev = simpledialog.askstring(
-            "Configure Hardware Device ID",
-            f"Enter Device ID for {new_bus}:",
-            initialvalue=default_dev,
-            parent=root
-        )
-
-        if not new_dev or not new_dev.strip():
-            new_dev = default_dev
-
-        new_dev = new_dev.strip()
 
         # Strict confirmation prompt to prevent accidental changes
         confirmed = messagebox.askyesno(
-            "CONFIRM HARDWARE RECONFIGURATION",
-            f"Are you ABSOLUTELY sure you want to change this device's configuration?\n\n"
-            f"Old Configuration: Bus {self.bus_id} ({self.device_id})\n"
-            f"New Configuration: Bus {new_bus} ({new_dev})\n\n"
+            "CONFIRM BUS ID CHANGE",
+            f"Are you ABSOLUTELY sure you want to change this device to Bus '{new_bus}'?\n\n"
+            f"Old Bus ID: {self.bus_id}\n"
+            f"New Bus ID: {new_bus}\n\n"
             f"This device will now record attendance and pull students specifically for {new_bus}.",
             parent=root
         )
@@ -287,14 +269,14 @@ class AttendanceDeviceApp:
 
         if confirmed:
             self.bus_id = new_bus
-            self.device_id = new_dev
+            self.device_id = new_bus
             # Persist in local SQLite configuration table
             self.db.set_config("bus_id", self.bus_id)
             self.db.set_config("device_id", self.device_id)
-            # Update sync worker dynamically
+            # Update sync worker dynamically (also auto-registers new bus in Supabase cloud)
             self.sync_worker.update_bus_id(self.bus_id)
-            self.banner = (f"CONFIG UPDATED: {self.bus_id} ({self.device_id})", time.time() + 4.0, False)
-            logger.info(f"Hardware successfully reconfigured to Bus: {self.bus_id}, Device: {self.device_id}")
+            self.banner = (f"BUS UPDATED: {self.bus_id}", time.time() + 4.0, False)
+            logger.info(f"Hardware successfully reconfigured to Bus: {self.bus_id}")
 
     def run(self) -> None:
         """Main execution loop."""
@@ -304,7 +286,7 @@ class AttendanceDeviceApp:
 
         window_name = f"Fleet Attendance Device - {self.bus_id}"
         logger.info(f"Running device loop (Headless={self.headless}).")
-        logger.info("Controls: Press 'Q' to quit, Press 'C' to configure Bus ID / Device ID.")
+        logger.info("Controls: Press 'Q' to quit, Press 'C' to configure Bus ID.")
 
         try:
             while True:
