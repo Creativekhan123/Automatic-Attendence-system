@@ -609,6 +609,144 @@ class TestStudentDeletionAndIdReuse(unittest.TestCase):
         self.assertIsNone(stu["face_embedding"])
 
 
+class TestPhase1PrototypeReadiness(unittest.TestCase):
+    """Verify Phase 1 requirements: headless mode, SyncWorker lifecycle, deactivation sync, and paths."""
+
+    def test_pyinstaller_path_resolution_when_frozen(self):
+        """Verify that when frozen (PyInstaller), _PROJECT_ROOT resolves to exe directory."""
+        with patch.object(sys, "frozen", True, create=True), \
+             patch.object(sys, "executable", r"C:\App\dist\AttendanceSystem\AttendanceSystem.exe"):
+            import src.config as config
+            if getattr(sys, "frozen", False):
+                proj_root = os.path.dirname(sys.executable)
+            else:
+                proj_root = os.path.dirname(os.path.dirname(os.path.abspath(config.__file__)))
+
+            db_path = os.path.join(proj_root, "data", "attendance.db")
+            env_path = os.path.join(proj_root, ".env")
+
+            self.assertEqual(proj_root, r"C:\App\dist\AttendanceSystem")
+            self.assertEqual(db_path, r"C:\App\dist\AttendanceSystem\data\attendance.db")
+            self.assertEqual(env_path, r"C:\App\dist\AttendanceSystem\.env")
+            self.assertNotIn("_internal", db_path)
+            self.assertNotIn("_internal", env_path)
+
+    def test_student_deactivation_remains_inactive_after_sync(self):
+        """Verify that a deactivated student (is_active=0) is synced with is_active=False."""
+        temp_fd, temp_db = tempfile.mkstemp(suffix=".db")
+        os.close(temp_fd)
+        try:
+            db = Database(db_path=temp_db)
+            dummy_embedding = np.ones(512, dtype=np.float32)
+            db.register_student("STU_DEACT", "Deact Student", "5A", "BUS01", dummy_embedding)
+            db.mark_student_synced(["STU_DEACT"])
+
+            # Deactivate student locally (soft delete)
+            ok = db.delete_student("STU_DEACT", soft_delete=True)
+            self.assertTrue(ok)
+            stu = db.get_student_by_id("STU_DEACT", active_only=False)
+            self.assertFalse(stu["is_active"])
+
+            mock_sb = MagicMock(spec=SupabaseService)
+            mock_sb.is_configured.return_value = True
+            mock_sb.ensure_bus.return_value = True
+            mock_sb.biometric_sync_enabled = False
+
+            uploaded_states = {}
+            def fake_upsert_student(student_id, name, class_name, bus_id, is_active=True, insert_only=False):
+                uploaded_states[student_id] = is_active
+                return True
+            mock_sb.upsert_student.side_effect = fake_upsert_student
+
+            worker = SyncWorker(db=db, supabase_service=mock_sb, enabled=True)
+            upload_ok = worker._upload_pending_students()
+            self.assertTrue(upload_ok)
+
+            self.assertIn("STU_DEACT", uploaded_states)
+            self.assertFalse(uploaded_states["STU_DEACT"], "Deactivated student was incorrectly forced to is_active=True!")
+            self.assertEqual(db.get_pending_students_count(), 0)
+        finally:
+            if os.path.exists(temp_db):
+                try:
+                    os.remove(temp_db)
+                except OSError:
+                    pass
+
+    def test_sync_worker_starts_once_and_shuts_down_cleanly(self):
+        """Verify SyncWorker starts exactly once, reports running, and shuts down cleanly."""
+        temp_fd, temp_db = tempfile.mkstemp(suffix=".db")
+        os.close(temp_fd)
+        try:
+            db = Database(db_path=temp_db)
+            mock_sb = MagicMock(spec=SupabaseService)
+            mock_sb.is_configured.return_value = False
+
+            worker = SyncWorker(db=db, supabase_service=mock_sb, interval_seconds=50.0, enabled=True)
+            self.assertFalse(worker.is_running)
+
+            worker.start()
+            self.assertTrue(worker.is_running)
+            initial_thread = worker._thread
+
+            # Duplicate start() call must not spawn another thread
+            worker.start()
+            self.assertEqual(worker._thread, initial_thread)
+
+            worker.stop(timeout=1.0)
+            self.assertFalse(worker.is_running)
+        finally:
+            if os.path.exists(temp_db):
+                try:
+                    os.remove(temp_db)
+                except OSError:
+                    pass
+
+    def test_headless_mode_never_calls_imshow_or_waitkey(self):
+        """Verify that when headless=True in main.py, cv2.imshow and cv2.waitKey are NEVER called."""
+        temp_fd, temp_db = tempfile.mkstemp(suffix=".db")
+        os.close(temp_fd)
+        try:
+            import main as main_app
+            mock_cam = MagicMock()
+            mock_cam.start.return_value = True
+            dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            mock_cam.read_frame.side_effect = [(True, dummy_frame), (False, None)]
+
+            with patch("main.Camera", return_value=mock_cam), \
+                 patch("main.cv2.imshow") as mock_imshow, \
+                 patch("main.cv2.waitKey") as mock_waitkey, \
+                 patch("main.cv2.destroyAllWindows") as mock_destroy, \
+                 patch("main.FaceRecognizer") as mock_rec_cls, \
+                 patch("main.SyncWorker") as mock_worker_cls:
+
+                mock_worker = MagicMock()
+                mock_worker.is_running = True
+                mock_worker_cls.return_value = mock_worker
+
+                mock_rec = MagicMock()
+                mock_rec.extract_faces.return_value = []
+                mock_rec_cls.return_value = mock_rec
+
+                main_app.run(
+                    camera_index=0,
+                    bus_id="BUS01",
+                    db_path=temp_db,
+                    headless=True
+                )
+
+                mock_imshow.assert_not_called()
+                mock_waitkey.assert_not_called()
+                mock_destroy.assert_not_called()
+                mock_worker.start.assert_called_once()
+                mock_worker.stop.assert_called_once()
+        finally:
+            if os.path.exists(temp_db):
+                try:
+                    os.remove(temp_db)
+                except OSError:
+                    pass
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 data/*.db
+*.db
+**/*.db
 .insights/
 .vscode/
 .idea/

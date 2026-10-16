@@ -265,6 +265,8 @@ class SyncWorker:
             name = s.get("name") or f"Student {s_id}"
             class_name = s.get("class_name") or "--"
 
+            is_active = bool(s.get("is_active", True))
+
             # 1. Ensure parent bus exists in cloud
             bus_ok = self.supabase.ensure_bus(bus_id)
             if not bus_ok:
@@ -272,16 +274,23 @@ class SyncWorker:
                 all_ok = False
                 continue
 
-            # 2. Upload student metadata (face embedding is NEVER included)
+            # 2. Upload student metadata (preserving active/inactive status)
             student_ok = self.supabase.upsert_student(
                 student_id=s_id,
                 name=name,
                 class_name=class_name,
                 bus_id=bus_id,
-                is_active=True,
+                is_active=is_active,
                 insert_only=False
             )
             if student_ok:
+                # 3. Upload biometric vector only if biometric cloud sync is explicitly enabled
+                if getattr(self.supabase, "biometric_sync_enabled", False) and is_active:
+                    full_student = self.db.get_student_by_id(s_id)
+                    if full_student and full_student.get("face_embedding") is not None:
+                        emb_bytes = self.db.serialize_embedding(full_student["face_embedding"])
+                        if emb_bytes:
+                            self.supabase.upload_student_biometrics(s_id, emb_bytes)
                 synced_ids.append(s_id)
             else:
                 logger.warning(f"Failed to upsert pending student {s_id}: {getattr(self.supabase, '_last_error', 'unknown error')}")

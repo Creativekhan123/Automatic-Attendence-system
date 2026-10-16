@@ -1,3 +1,4 @@
+import os
 import argparse
 import sys
 import time
@@ -8,6 +9,7 @@ from src.camera import Camera
 from src.face_recognizer import FaceRecognizer
 from src.database import Database
 from src.attendance import AttendanceEngine
+from src.sync_worker import SyncWorker
 from src.config import (
     DEFAULT_BUS_ID,
     DEFAULT_DB_PATH,
@@ -45,7 +47,8 @@ def run(
     db_path: str = DEFAULT_DB_PATH,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     required_confirmations: int = REQUIRED_CONFIRMATIONS,
-    confirmation_window: float = CONFIRMATION_WINDOW_SECONDS
+    confirmation_window: float = CONFIRMATION_WINDOW_SECONDS,
+    headless: bool = False
 ) -> None:
     """Run the live camera feed, student face recognition, and automatic attendance engine.
 
@@ -56,20 +59,31 @@ def run(
         similarity_threshold: Cosine similarity cutoff for identity verification.
         required_confirmations: Consecutive observations needed to confirm attendance.
         confirmation_window: Time window in seconds for confirmation observations.
+        headless: If True, disables all OpenCV GUI display windows for headless Raspberry Pi use.
     """
+    # Auto-detect headless environment on Linux if DISPLAY is not set
+    if not headless and sys.platform != "win32":
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            headless = True
+
     print("==========================================================")
     print(" Bus Attendance System - Part 3: Automatic Attendance      ")
     print("==========================================================")
     print(f"Session Bus ID: {bus_id}")
     print(f"Database File : {db_path}")
     print(f"Confirmation  : {required_confirmations} matches in {confirmation_window}s window")
+    print(f"Display Mode  : {'Headless (No GUI / OpenCV windows)' if headless else 'Interactive GUI'}")
 
-    # 1. Initialize local SQLite database
+    # 1. Initialize local SQLite database & background sync worker
     db = Database(db_path=db_path)
     registered_students = db.get_all_students()
     print(f"Loaded {len(registered_students)} registered student(s).")
     if not registered_students:
         print("Note: No students registered yet. Run 'python register_student.py' to enroll students.")
+
+    # Start background synchronization worker (drains pending queue and pulls roster)
+    sync_worker = SyncWorker(db=db)
+    sync_worker.start()
 
     # 2. Initialize Attendance Engine
     attendance_engine = AttendanceEngine(
@@ -101,10 +115,15 @@ def run(
         sys.exit(1)
 
     print("Camera initialized successfully.")
-    window_title = f"Bus Attendance - {bus_id} (Q: Exit, S: Summary)"
-    print("\nControls:")
-    print(" - Press 'Q' in the camera window to exit.")
-    print(" - Press 'S' to display the current attendance summary in console.")
+    if not headless:
+        window_title = f"Bus Attendance - {bus_id} (Q: Exit, S: Summary)"
+        print("\nControls:")
+        print(" - Press 'Q' in the camera window to exit.")
+        print(" - Press 'S' to display the current attendance summary in console.")
+    else:
+        window_title = ""
+        print("\nControls:")
+        print(" - Press Ctrl+C in terminal to stop headless engine.")
     print("Live attendance engine running...\n")
 
     # Temporary visual banner state: (message_text, expire_timestamp, is_error)
@@ -154,6 +173,7 @@ def run(
                             time.time() + NOTIFICATION_DURATION_SECONDS,
                             False
                         )
+                        sync_worker.trigger_immediate_sync()
 
                     if status in ("PRESENT", "ALREADY PRESENT"):
                         box_color = (0, 255, 0)      # Green
@@ -218,38 +238,51 @@ def run(
                 else:
                     recent_notification = None
 
-            # Top status banner overlay
-            summary = attendance_engine.get_attendance_summary()
-            top_bar_text = f"Bus: {bus_id} | Faces: {num_faces} | Present: {summary['total_present']}/{summary['total_registered']}"
-            cv2.rectangle(frame, (10, 10), (450, 48), (0, 0, 0), -1)
-            cv2.putText(
-                frame,
-                top_bar_text,
-                (20, 36),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.60,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA
-            )
+            if not headless:
+                # Top status banner overlay
+                summary = attendance_engine.get_attendance_summary()
+                top_bar_text = f"Bus: {bus_id} | Faces: {num_faces} | Present: {summary['total_present']}/{summary['total_registered']}"
+                cv2.rectangle(frame, (10, 10), (450, 48), (0, 0, 0), -1)
+                cv2.putText(
+                    frame,
+                    top_bar_text,
+                    (20, 36),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.60,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA
+                )
 
-            # Display frame
-            cv2.imshow(window_title, frame)
+                # Display frame
+                cv2.imshow(window_title, frame)
 
-            # Key handling (1ms)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q') or key == ord('Q'):
-                print("Exit signal received ('Q' pressed). Closing application...")
-                break
-            elif key == ord('s') or key == ord('S'):
-                print_attendance_summary(attendance_engine)
+                # Key handling (1ms)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == ord('Q'):
+                    print("Exit signal received ('Q' pressed). Closing application...")
+                    break
+                elif key == ord('s') or key == ord('S'):
+                    print_attendance_summary(attendance_engine)
+            else:
+                # Headless frame pacing (prevents high CPU spin)
+                time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("\nProcess interrupted by user (Ctrl+C). Closing application...")
     finally:
         camera.release()
-        cv2.destroyAllWindows()
-        print("Camera released and all OpenCV windows closed cleanly.")
+        if not headless:
+            cv2.destroyAllWindows()
+            print("Camera released and all OpenCV windows closed cleanly.")
+        else:
+            print("Camera released.")
+
+        # Shut down background sync worker cleanly
+        if sync_worker.is_running:
+            print("Stopping background synchronization worker...")
+            sync_worker.stop(timeout=2.0)
+
         # Print final attendance summary on exit
         print_attendance_summary(attendance_engine)
 
@@ -295,6 +328,11 @@ def main() -> None:
         default=CONFIRMATION_WINDOW_SECONDS,
         help=f"Confirmation time window in seconds (default: {CONFIRMATION_WINDOW_SECONDS})"
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without GUI/OpenCV display windows (for headless Raspberry Pi operation)"
+    )
     args = parser.parse_args()
 
     run(
@@ -303,7 +341,8 @@ def main() -> None:
         db_path=args.db_path,
         similarity_threshold=args.threshold,
         required_confirmations=args.confirmations,
-        confirmation_window=args.window
+        confirmation_window=args.window,
+        headless=args.headless
     )
 
 

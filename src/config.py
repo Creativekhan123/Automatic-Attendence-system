@@ -5,7 +5,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Automatically load environment variables from .env in project root if present
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# When frozen (PyInstaller), anchor to the executable directory so .env and data/attendance.db
+# remain outside the extracted _internal folder and are not overwritten during updates.
+if getattr(sys, "frozen", False):
+    _PROJECT_ROOT = os.path.dirname(sys.executable)
+else:
+    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 _env_path = os.path.join(_PROJECT_ROOT, ".env")
 if os.path.exists(_env_path):
     load_dotenv(_env_path)
