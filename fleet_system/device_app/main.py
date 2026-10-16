@@ -48,6 +48,13 @@ class AttendanceDeviceApp:
         required_confirmations: int = 3,
         confirmation_window: float = 2.0
     ) -> None:
+        self.db_path = db_path
+        self.camera_index = camera_index
+        self.headless = headless
+        self.similarity_threshold = similarity_threshold
+        self.required_confirmations = required_confirmations
+        self.confirmation_window = confirmation_window
+
         # Initialize local storage
         self.db = DeviceDatabase(db_path=self.db_path)
 
@@ -70,13 +77,6 @@ class AttendanceDeviceApp:
         else:
             self.device_id = f"{self.bus_id}_DEV_01"
             self.db.set_config("device_id", self.device_id)
-
-        self.db_path = db_path
-        self.camera_index = camera_index
-        self.headless = headless
-        self.similarity_threshold = similarity_threshold
-        self.required_confirmations = required_confirmations
-        self.confirmation_window = confirmation_window
 
         # Auto-detect headless mode on Linux if no display is available
         if not self.headless and sys.platform != "win32":
