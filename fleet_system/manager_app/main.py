@@ -206,7 +206,18 @@ class AttendanceManagerApp(ctk.CTk):
         )
         goto_register_btn.pack(side="left", padx=15, pady=10)
 
-        ctk.CTkLabel(ctrl, text="Search:").pack(side="left", padx=(20, 5))
+        ctk.CTkLabel(ctrl, text="Filter Bus:").pack(side="left", padx=(20, 5))
+        self.stu_bus_filter_var = ctk.StringVar(value="All Buses")
+        self.stu_bus_combo = ctk.CTkComboBox(
+            ctrl,
+            variable=self.stu_bus_filter_var,
+            values=["All Buses"],
+            width=130,
+            command=lambda _: self.render_students_table()
+        )
+        self.stu_bus_combo.pack(side="left", padx=5)
+
+        ctk.CTkLabel(ctrl, text="Search:").pack(side="left", padx=(15, 5))
         self.search_entry = ctk.CTkEntry(ctrl, placeholder_text="ID or Name...", width=160)
         self.search_entry.pack(side="left", padx=5)
         self.search_entry.bind("<KeyRelease>", lambda _: self.render_students_table())
@@ -223,11 +234,18 @@ class AttendanceManagerApp(ctk.CTk):
             widget.destroy()
 
         query = self.search_entry.get().strip().lower()
-        # Only show active students in directory
-        filtered = [
-            s for s in self.students 
-            if s.get("is_active", True) and (query in s.get("student_id", "").lower() or query in s.get("name", "").lower())
-        ]
+        selected_bus = self.stu_bus_filter_var.get()
+
+        # Filter students by active status, search query, and selected bus
+        filtered = []
+        for s in self.students:
+            if not s.get("is_active", True):
+                continue
+            if selected_bus != "All Buses" and str(s.get("bus_id", "")).strip() != selected_bus:
+                continue
+            if query and query not in s.get("student_id", "").lower() and query not in s.get("name", "").lower():
+                continue
+            filtered.append(s)
 
         # Table Header
         hdr = ctk.CTkFrame(self.students_scroll, fg_color="#242938", height=35)
@@ -702,6 +720,7 @@ class AttendanceManagerApp(ctk.CTk):
         # Update bus dropdown options
         bus_names = ["All Buses"] + [b["bus_id"] for b in self.buses]
         self.bus_combo.configure(values=bus_names)
+        self.stu_bus_combo.configure(values=bus_names)
 
         # Update bus options in registration form
         clean_bus_ids = [b["bus_id"] for b in self.buses] or ["Bus01"]

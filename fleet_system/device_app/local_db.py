@@ -61,9 +61,45 @@ class DeviceDatabase:
                 )
             """)
 
+            # 3. Local Hardware Device & Bus Configuration
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS device_config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_att_date_bus ON attendance (attendance_date, bus_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_att_sync ON attendance (sync_status)")
             conn.commit()
+
+    # =========================================================================
+    # DEVICE CONFIGURATION (BUS ID & DEVICE ID)
+    # =========================================================================
+
+    def get_config(self, key: str, default: str = "") -> str:
+        """Fetch a persistent configuration string from local database."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM device_config WHERE key = ?", (key.strip(),))
+            row = cursor.fetchone()
+            return row["value"] if row else default
+
+    def set_config(self, key: str, value: str) -> None:
+        """Store or update a persistent configuration string in local database."""
+        now_str = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO device_config (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+            """, (key.strip(), value.strip(), now_str))
+            conn.commit()
+
 
     # =========================================================================
     # ROSTER / STUDENT CACHE METHODS

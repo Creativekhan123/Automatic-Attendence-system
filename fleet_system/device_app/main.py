@@ -48,8 +48,29 @@ class AttendanceDeviceApp:
         required_confirmations: int = 3,
         confirmation_window: float = 2.0
     ) -> None:
-        self.bus_id = bus_id.strip()
-        self.device_id = device_id or f"{self.bus_id}_DEV_01"
+        # Initialize local storage
+        self.db = DeviceDatabase(db_path=self.db_path)
+
+        # Load persistent Bus ID and Device ID if saved locally (CLI overrides default)
+        saved_bus = self.db.get_config("bus_id", "")
+        saved_device = self.db.get_config("device_id", "")
+
+        # If user passed a non-default CLI bus_id, save and use it; otherwise use saved config
+        if bus_id != "Bus01" or not saved_bus:
+            self.bus_id = bus_id.strip()
+            self.db.set_config("bus_id", self.bus_id)
+        else:
+            self.bus_id = saved_bus.strip()
+
+        if device_id:
+            self.device_id = device_id.strip()
+            self.db.set_config("device_id", self.device_id)
+        elif saved_device:
+            self.device_id = saved_device.strip()
+        else:
+            self.device_id = f"{self.bus_id}_DEV_01"
+            self.db.set_config("device_id", self.device_id)
+
         self.db_path = db_path
         self.camera_index = camera_index
         self.headless = headless
@@ -62,8 +83,6 @@ class AttendanceDeviceApp:
             if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
                 self.headless = True
 
-        # Initialize local storage
-        self.db = DeviceDatabase(db_path=self.db_path)
         # Initialize background sync worker
         self.sync_worker = DeviceSyncWorker(db=self.db, bus_id=self.bus_id)
 
@@ -221,6 +240,62 @@ class AttendanceDeviceApp:
                 2
             )
 
+    def prompt_reconfigure_device(self) -> None:
+        """Prompt administrator in a safe Tkinter popup to change Bus ID / Device ID with confirmation."""
+        import tkinter as tk
+        from tkinter import simpledialog, messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+
+        new_bus = simpledialog.askstring(
+            "Configure Hardware Bus ID",
+            f"Current Bus ID: {self.bus_id}\nEnter new Bus ID (e.g. Bus02, Bus03):",
+            initialvalue=self.bus_id,
+            parent=root
+        )
+
+        if not new_bus or not new_bus.strip() or new_bus.strip() == self.bus_id:
+            root.destroy()
+            return
+
+        new_bus = new_bus.strip()
+        default_dev = f"{new_bus}_DEV_01"
+        new_dev = simpledialog.askstring(
+            "Configure Hardware Device ID",
+            f"Enter Device ID for {new_bus}:",
+            initialvalue=default_dev,
+            parent=root
+        )
+
+        if not new_dev or not new_dev.strip():
+            new_dev = default_dev
+
+        new_dev = new_dev.strip()
+
+        # Strict confirmation prompt to prevent accidental changes
+        confirmed = messagebox.askyesno(
+            "CONFIRM HARDWARE RECONFIGURATION",
+            f"Are you ABSOLUTELY sure you want to change this device's configuration?\n\n"
+            f"Old Configuration: Bus {self.bus_id} ({self.device_id})\n"
+            f"New Configuration: Bus {new_bus} ({new_dev})\n\n"
+            f"This device will now record attendance and pull students specifically for {new_bus}.",
+            parent=root
+        )
+        root.destroy()
+
+        if confirmed:
+            self.bus_id = new_bus
+            self.device_id = new_dev
+            # Persist in local SQLite configuration table
+            self.db.set_config("bus_id", self.bus_id)
+            self.db.set_config("device_id", self.device_id)
+            # Update sync worker dynamically
+            self.sync_worker.update_bus_id(self.bus_id)
+            self.banner = (f"CONFIG UPDATED: {self.bus_id} ({self.device_id})", time.time() + 4.0, False)
+            logger.info(f"Hardware successfully reconfigured to Bus: {self.bus_id}, Device: {self.device_id}")
+
     def run(self) -> None:
         """Main execution loop."""
         if not self.initialize():
@@ -228,7 +303,8 @@ class AttendanceDeviceApp:
             return
 
         window_name = f"Fleet Attendance Device - {self.bus_id}"
-        logger.info(f"Running device loop (Headless={self.headless}). Press 'Q' to quit.")
+        logger.info(f"Running device loop (Headless={self.headless}).")
+        logger.info("Controls: Press 'Q' to quit, Press 'C' to configure Bus ID / Device ID.")
 
         try:
             while True:
@@ -245,6 +321,9 @@ class AttendanceDeviceApp:
                     if key in (ord('q'), ord('Q')):
                         logger.info("User requested exit ('Q' pressed).")
                         break
+                    elif key in (ord('c'), ord('C')):
+                        self.prompt_reconfigure_device()
+                        window_name = f"Fleet Attendance Device - {self.bus_id}"
                 else:
                     time.sleep(0.01)
 

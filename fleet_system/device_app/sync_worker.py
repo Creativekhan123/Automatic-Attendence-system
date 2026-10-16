@@ -44,6 +44,12 @@ class DeviceSyncWorker:
         self.pending_count = 0
         self.active_students_count = 0
 
+    def update_bus_id(self, new_bus_id: str) -> None:
+        """Dynamically update assigned bus_id and trigger sync."""
+        with self._lock:
+            self.bus_id = new_bus_id.strip()
+        self.trigger_immediate_sync()
+
     def start(self) -> None:
         """Start background sync thread."""
         with self._lock:
