@@ -80,6 +80,13 @@ class AttendanceDeviceApp:
         # Initialize background sync worker
         self.sync_worker = DeviceSyncWorker(db=self.db, bus_id=self.bus_id)
 
+        # Load persistent custom cloud credentials from local database if previously configured
+        saved_cloud_url = self.db.get_config("supabase_url", "")
+        saved_cloud_key = self.db.get_config("supabase_key", "")
+        if saved_cloud_url and saved_cloud_key:
+            self.sync_worker.cloud.reconfigure(saved_cloud_url, saved_cloud_key)
+            logger.info(f"Loaded persistent cloud credentials from device storage: {saved_cloud_url}")
+
         # Recognition & Camera
         self.face_recognizer: Optional[FaceRecognizer] = None
         self.camera: Optional[Camera] = None
@@ -201,13 +208,15 @@ class AttendanceDeviceApp:
         telemetry = self.sync_worker.get_status_telemetry()
         stats = self.db.get_stats_for_today(self.bus_id)
 
-        # Top Bar: Bus info & Presence
+        # Top Bar: Bus info & Presence + Shortcut Keys
         cv2.rectangle(frame, (0, 0), (w, 42), (20, 24, 33), -1)
         top_txt = (
             f"BUS: {self.bus_id} | "
             f"PRESENT: {stats['total_present']}/{stats['total_assigned']}"
         )
         cv2.putText(frame, top_txt, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+        ctrl_hint = "[C] Bus ID  [S] Cloud Keys  [Q] Exit"
+        cv2.putText(frame, ctrl_hint, (max(15, w - 370), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (180, 190, 205), 1)
 
         # Bottom Bar: Cloud & Sync telemetry
         cv2.rectangle(frame, (0, h - 36), (w, h), (20, 24, 33), -1)
@@ -279,59 +288,87 @@ class AttendanceDeviceApp:
             logger.info(f"Hardware successfully reconfigured to Bus: {self.bus_id}")
 
     def prompt_configure_credentials(self) -> None:
-        """Prompt administrator in a safe Tkinter popup to configure Supabase URL & Key with confirmation."""
-        import tkinter as tk
-        from tkinter import simpledialog, messagebox
+        """Prompt administrator to configure Supabase URL & Key with persistent confirmation."""
         from fleet_system.shared.cloud_client import save_cloud_credentials
-
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
 
         cur_url, cur_key = self.sync_worker.cloud.get_current_credentials()
 
-        new_url = simpledialog.askstring(
-            "Configure Supabase URL",
-            f"Current URL:\n{cur_url}\n\nEnter Supabase Project URL (e.g. https://xyz.supabase.co):",
-            initialvalue=cur_url,
-            parent=root
-        )
-        if not new_url or not new_url.strip():
+        if self.headless:
+            # Console fallback for headless execution / Raspberry Pi SSH terminal
+            print("\n" + "=" * 60)
+            print("  CONFIGURE SUPABASE CLOUD CREDENTIALS")
+            print("=" * 60)
+            print(f"Current URL: {cur_url}")
+            input_url = input(f"Enter Supabase Project URL [{cur_url}]: ").strip()
+            new_url = input_url if input_url else cur_url
+
+            input_key = input("Enter Supabase API Key (press Enter to keep current): ").strip()
+            new_key = input_key if input_key else cur_key
+
+            new_url = new_url.strip().rstrip("/")
+            new_key = new_key.strip()
+
+            confirm = input(f"\nSave credentials for URL '{new_url}'? (y/n): ").strip().lower()
+            if confirm != "y":
+                print("Configuration cancelled.")
+                return
+            confirmed = True
+        else:
+            import tkinter as tk
+            from tkinter import simpledialog, messagebox
+
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+
+            new_url = simpledialog.askstring(
+                "Configure Supabase URL",
+                f"Current URL:\n{cur_url}\n\nEnter Supabase Project URL (e.g. https://xyz.supabase.co):",
+                initialvalue=cur_url,
+                parent=root
+            )
+            if not new_url or not new_url.strip():
+                root.destroy()
+                return
+
+            new_key = simpledialog.askstring(
+                "Configure Supabase API Key",
+                f"Enter Supabase API Key (anon/publishable/service_role):",
+                initialvalue=cur_key,
+                parent=root
+            )
+            if not new_key or not new_key.strip():
+                root.destroy()
+                return
+
+            new_url = new_url.strip().rstrip("/")
+            new_key = new_key.strip()
+
+            confirmed = messagebox.askyesno(
+                "CONFIRM CLOUD CREDENTIALS UPDATE",
+                f"Are you ABSOLUTELY sure you want to update the Cloud Database credentials?\n\n"
+                f"New URL: {new_url}\n\n"
+                f"The device will now connect to this Supabase project for attendance and roster sync.\n\n"
+                f"These credentials will be permanently saved on this device.",
+                parent=root
+            )
             root.destroy()
-            return
-
-        new_key = simpledialog.askstring(
-            "Configure Supabase API Key",
-            f"Enter Supabase API Key (anon/publishable/service_role):",
-            initialvalue=cur_key,
-            parent=root
-        )
-        if not new_key or not new_key.strip():
-            root.destroy()
-            return
-
-        new_url = new_url.strip().rstrip("/")
-        new_key = new_key.strip()
-
-        confirmed = messagebox.askyesno(
-            "CONFIRM CLOUD CREDENTIALS UPDATE",
-            f"Are you ABSOLUTELY sure you want to update the Cloud Database credentials?\n\n"
-            f"New URL: {new_url}\n\n"
-            f"The device will now connect to this Supabase project for attendance and roster sync.",
-            parent=root
-        )
-        root.destroy()
 
         if confirmed:
             self.sync_worker.cloud.reconfigure(new_url, new_key)
             ok, msg = self.sync_worker.cloud.test_connection()
+            # 1. Save to .env file
             save_cloud_credentials(new_url, new_key)
+            # 2. Persist permanently in local SQLite device_config table
+            self.db.set_config("supabase_url", new_url)
+            self.db.set_config("supabase_key", new_key)
+
             if ok:
                 self.banner = ("CLOUD CONNECTED & SAVED", time.time() + 4.0, False)
-                logger.info(f"Cloud credentials updated and verified successfully! ({new_url})")
+                logger.info(f"Cloud credentials updated, verified, and permanently saved! ({new_url})")
             else:
                 self.banner = ("CREDENTIALS SAVED (CHECK CONNECTION)", time.time() + 4.0, True)
-                logger.warning(f"Cloud credentials saved but test returned: {msg}")
+                logger.warning(f"Cloud credentials permanently saved but test returned: {msg}")
             self.sync_worker.trigger_immediate_sync()
 
     def run(self) -> None:
@@ -391,6 +428,7 @@ def main() -> None:
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index (default: 0)")
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run without GUI/OpenCV display (Raspberry Pi)")
+    parser.add_argument("--configure-cloud", action="store_true", help="Open cloud credentials editor before starting")
     args = parser.parse_args()
 
     app = AttendanceDeviceApp(
@@ -400,6 +438,8 @@ def main() -> None:
         camera_index=args.camera_index,
         headless=args.headless
     )
+    if args.configure_cloud:
+        app.prompt_configure_credentials()
     app.run()
 
 
