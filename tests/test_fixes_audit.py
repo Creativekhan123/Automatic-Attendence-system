@@ -32,7 +32,7 @@ class TestFix1SupabaseSecurity(unittest.TestCase):
         # Attempting upload without flag must fail
         ok = service.upload_student_biometrics("101", b"\x00" * 2048)
         self.assertFalse(ok)
-        self.assertIn("disabled", service._last_error.lower())
+        self.assertIn("disabled", (service._last_error or "").lower())
 
     def test_cloud_attendance_payload_excludes_biometrics_and_session_type(self):
         """Verify that attendance payload formatting never includes embeddings, photos, or session_type."""
@@ -426,7 +426,7 @@ class TestAllowedAndDeniedOperations(unittest.TestCase):
         self.assertFalse(service.biometric_sync_enabled)
         ok = service.upload_student_biometrics("101", b"\x00" * 2048)
         self.assertFalse(ok)
-        self.assertIn("disabled", service._last_error.lower())
+        self.assertIn("disabled", (service._last_error or "").lower())
 
     def test_denied_cloud_overwrite_on_conflict(self):
         """DENIED: Cloud row is never overwritten when 23505 conflict occurs."""
@@ -645,6 +645,8 @@ class TestPhase1PrototypeReadiness(unittest.TestCase):
             ok = db.delete_student("STU_DEACT", soft_delete=True)
             self.assertTrue(ok)
             stu = db.get_student_by_id("STU_DEACT", active_only=False)
+            self.assertIsNotNone(stu)
+            assert stu is not None
             self.assertFalse(stu["is_active"])
 
             mock_sb = MagicMock(spec=SupabaseService)

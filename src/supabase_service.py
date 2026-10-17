@@ -49,8 +49,8 @@ class IdCrosswalk:
         students: Optional[Dict[str, str]] = None,
         buses: Optional[Dict[str, str]] = None
     ) -> None:
-        self.students: Dict[str, str] = {str(k): str(v) for k, v in (students or {}).items()}
-        self.buses: Dict[str, str] = {str(k): str(v) for k, v in (buses or {}).items()}
+        self.students: Dict[str, str] = {k: v for k, v in (students or {}).items()}
+        self.buses: Dict[str, str] = {k: v for k, v in (buses or {}).items()}
         self._students_rev = {v: k for k, v in self.students.items()}
         self._buses_rev = {v: k for k, v in self.buses.items()}
 
@@ -130,10 +130,13 @@ class SupabaseService:
                         options = SyncClientOptions(postgrest_client_timeout=SYNC_HTTP_TIMEOUT)
                     except Exception:
                         options = None
-                if options is not None:
-                    self.client = create_client(self.url, self.key, options)
+                if create_client is not None:
+                    if options is not None:
+                        self.client = create_client(self.url, self.key, options)
+                    else:
+                        self.client = create_client(self.url, self.key)
                 else:
-                    self.client = create_client(self.url, self.key)
+                    self.client = None
             except Exception as e:
                 self._last_error = f"Failed to initialize Supabase client: {e}"
                 self.client = None
@@ -146,9 +149,11 @@ class SupabaseService:
     def _error_code(exc: Exception) -> Optional[str]:
         """Extract the PostgREST/PostgreSQL error code (e.g. '23505'), or None for network errors."""
         try:
-            payload = exc.json()  # postgrest APIError
-            if isinstance(payload, dict) and payload.get("code"):
-                return str(payload["code"])
+            json_fn = getattr(exc, "json", None)
+            if callable(json_fn):
+                payload = json_fn()
+                if isinstance(payload, dict) and payload.get("code"):
+                    return str(payload["code"])
         except Exception:
             pass
         match = re.search(r"'code':\s*'([^']+)'", str(exc))
@@ -186,7 +191,7 @@ class SupabaseService:
             return []
         try:
             res = self.client.table("buses").select("*").order("bus_id").execute()
-            return res.data or []
+            return [dict(x) for x in res.data] if res.data else []
         except Exception as e:
             logger.error(f"Error fetching buses from Supabase: {e}")
             self._last_error = str(e)
@@ -196,7 +201,7 @@ class SupabaseService:
         """Return True/False if the (already cloud-mapped) bus exists, None if unknown (error)."""
         if not self.client or not cloud_bus_id:
             return None
-        clean_id = str(cloud_bus_id).strip()
+        clean_id = cloud_bus_id.strip()
         try:
             res = self.client.table("buses").select("bus_id").eq("bus_id", clean_id).limit(1).execute()
             return bool(res.data)
@@ -266,7 +271,7 @@ class SupabaseService:
             if active_only:
                 query = query.eq("is_active", True)
             res = query.order("student_id").execute()
-            return res.data or []
+            return [dict(x) for x in res.data] if res.data else []
         except Exception as e:
             logger.error(f"Error fetching students from Supabase: {e}")
             self._last_error = str(e)
@@ -365,6 +370,8 @@ class SupabaseService:
             res = self.client.table("student_biometrics").select("student_id, embedding, model_name").execute()
             records = []
             for row in (res.data or []):
+                if not isinstance(row, dict):
+                    continue
                 raw_emb = row.get("embedding")
                 if isinstance(raw_emb, str):
                     if raw_emb.startswith("\\x"):
@@ -377,7 +384,7 @@ class SupabaseService:
 
                 if byte_data:
                     records.append({
-                        "student_id": self.crosswalk.student_to_local(row["student_id"]),
+                        "student_id": self.crosswalk.student_to_local(str(row["student_id"])),
                         "embedding": byte_data,
                         "model_name": row.get("model_name", "buffalo_sc")
                     })
@@ -411,6 +418,8 @@ class SupabaseService:
 
     def _find_attendance_by_triple(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Look up the cloud row holding a (student_id, attendance_date, bus_id) combination."""
+        if not self.client:
+            return None
         try:
             res = (
                 self.client.table("attendance")
@@ -429,6 +438,8 @@ class SupabaseService:
 
     def _upload_single_attendance(self, payload: Dict[str, Any]) -> Tuple[str, Optional[str]]:
         """Upsert one cloud-mapped record and classify the outcome."""
+        if not self.client:
+            return "network", "Supabase client not initialized"
         try:
             self.client.table("attendance").upsert(payload, on_conflict="event_id").execute()
             return "ok", None
@@ -504,7 +515,10 @@ class SupabaseService:
         if verify and ok_ids:
             try:
                 res = self.client.table("attendance").select("event_id").in_("event_id", ok_ids).execute()
-                found = {row["event_id"] for row in (res.data or [])}
+                found = {
+                    row["event_id"] for row in (res.data or [])
+                    if isinstance(row, dict) and "event_id" in row
+                }
                 for eid in ok_ids:
                     if eid not in found:
                         results[eid] = ("rejected", "not found on read-back verification")
@@ -543,7 +557,10 @@ class SupabaseService:
             res = query.order("attendance_time").execute()
             formatted = []
             for row in (res.data or []):
-                stu_info = row.get("students") or {}
+                if not isinstance(row, dict):
+                    continue
+                stu_raw = row.get("students")
+                stu_info = stu_raw if isinstance(stu_raw, dict) else {}
                 formatted.append({
                     "event_id": row.get("event_id"),
                     "student_id": row.get("student_id"),

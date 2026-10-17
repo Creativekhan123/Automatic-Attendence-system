@@ -109,7 +109,8 @@ class TestUploadMappingAndIsolation(unittest.TestCase):
         client.table().upsert.reset_mock()
         count, ids, err = svc.upload_attendance_batch([rec("e1"), rec("e2")])
         self.assertEqual((count, ids), (0, []))
-        self.assertIn("e1", err)
+        self.assertIsNotNone(err)
+        self.assertIn("e1", err or "")
         self.assertTrue(all(s == "network" for s, _ in svc.last_upload_results.values()))
         # Only the single batch attempt, no per-record hammering while offline
         self.assertEqual(client.table().upsert.call_count, 1)
@@ -126,7 +127,9 @@ class TestUploadMappingAndIsolation(unittest.TestCase):
         count, ids, err = svc.upload_attendance_batch([rec("local-30")])
         self.assertEqual((count, ids), (0, []))
         self.assertEqual(svc.last_upload_results["local-30"][0], "conflict")
-        self.assertIn("91fefea4-cloud", svc.last_upload_results["local-30"][1])
+        detail = svc.last_upload_results["local-30"][1]
+        self.assertIsNotNone(detail)
+        self.assertIn("91fefea4-cloud", detail or "")
 
     def test_duplicate_triple_with_same_event_counts_as_synced(self):
         svc, client = make_service()

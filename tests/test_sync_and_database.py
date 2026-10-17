@@ -120,6 +120,8 @@ class TestDatabaseLocalAndSync(unittest.TestCase):
         # Update student class from cloud
         self.db.upsert_student_from_cloud("202", "Bob Jones", "Grade 7", "BUS01", True)
         student_updated = self.db.get_student_by_id("202")
+        self.assertIsNotNone(student_updated)
+        assert student_updated is not None
         self.assertEqual(student_updated["class_name"], "Grade 7")
 
     def test_attendance_engine_confirmations(self):

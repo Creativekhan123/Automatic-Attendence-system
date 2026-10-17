@@ -484,11 +484,11 @@ class Database:
         Uniqueness is strictly enforced on (student_id, attendance_date, bus_id).
         Assigns a stable UUID event_id and queues for cloud synchronization.
         """
-        if not student_id or not str(student_id).strip():
+        if not student_id or not student_id.strip():
             return False
-        if not attendance_date or not str(attendance_date).strip():
+        if not attendance_date or not attendance_date.strip():
             return False
-        if not bus_id or not str(bus_id).strip():
+        if not bus_id or not bus_id.strip():
             return False
 
         student = self.get_student_by_id(student_id)
