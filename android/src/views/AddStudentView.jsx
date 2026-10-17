@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Camera, Check, UserPlus, Image as ImageIcon, RotateCcw, AlertCircle, Sparkles, ShieldAlert, CheckCircle2, Scan } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { detectFaces } from '../services/faceDetector';
+import { detectFaces, getFaceDetector } from '../services/faceDetector';
 
 export default function AddStudentView({ buses, students, onStudentCreated }) {
   // Suggest next ID

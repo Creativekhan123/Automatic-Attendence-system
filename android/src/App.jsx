@@ -7,6 +7,7 @@ import AddStudentView from './views/AddStudentView';
 import FleetOverviewView from './views/FleetOverviewView';
 import ReportsView from './views/ReportsView';
 import SettingsModal from './views/SettingsModal';
+import ErrorBoundary from './components/ErrorBoundary';
 import { getClient } from './services/supabase';
 import { Phone, X, Calendar, Bus, Clock, CheckCircle } from 'lucide-react';
 
@@ -134,7 +135,8 @@ export default function App() {
 
       {/* Main Content Dynamic Views */}
       <main className="main-content">
-        {activeTab === 'live' && (
+        <ErrorBoundary>
+          {activeTab === 'live' && (
           <LiveAttendanceView
             students={students}
             buses={buses}
@@ -184,6 +186,7 @@ export default function App() {
             selectedBus={selectedBus}
           />
         )}
+        </ErrorBoundary>
       </main>
 
       {/* Floating Bottom Navigation */}
