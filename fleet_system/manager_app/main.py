@@ -35,12 +35,55 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 
+class TabViewCompat:
+    """Compatibility adapter enabling legacy self.tabs.set() callers to switch pages cleanly."""
+    def __init__(self, app: "AttendanceManagerApp") -> None:
+        self.app = app
+
+    def set(self, tab_name: str) -> None:
+        self.app.set_tab(tab_name)
+
+
 class AttendanceManagerApp(ctk.CTk):
-    """Main desktop manager window."""
+    """Main desktop manager window with modern enterprise collapsible sidebar layout."""
+
+    EXPANDED_WIDTH = 220
+    COLLAPSED_WIDTH = 68
+
+    PAGE_METADATA = {
+        "live_attendance": (
+            "Live Attendance",
+            "Monitor today's student boarding activity across your fleet."
+        ),
+        "student_directory": (
+            "Student Directory & Bus Assignment",
+            "Manage student rosters, bus assignments, and biometric status."
+        ),
+        "bus_management": (
+            "Bus Fleet Management",
+            "View and manage fleet school buses, driver routes, and assignments."
+        ),
+        "register_student": (
+            "Register Student (Live Camera)",
+            "Enroll new student biometric face profile via camera."
+        ),
+        "reports": (
+            "Reports & CSV Export",
+            "Generate and download official school bus attendance logs in CSV format."
+        ),
+        "cloud_settings": (
+            "Cloud Configuration & Settings",
+            "Manage central Supabase connection credentials and endpoints."
+        ),
+        "settings": (
+            "Cloud Configuration & Settings",
+            "Manage central Supabase connection credentials and endpoints."
+        ),
+    }
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("Fleet Attendance Manager — Administrative Suite")
+        self.title("Fleet Attendance Manager — Enterprise School Bus Cloud Workstation")
         self.geometry("1180x760")
         self.minsize(1050, 680)
 
@@ -55,7 +98,16 @@ class AttendanceManagerApp(ctk.CTk):
         # Shared FaceRecognizer instance
         self._recognizer = None
 
+        # Sidebar & Navigation State
+        self.is_sidebar_collapsed: bool = False
+        self.current_page_key: str = "live_attendance"
+        self.nav_buttons: Dict[str, ctk.CTkButton] = {}
+        self.nav_icons: Dict[str, str] = {}
+        self.nav_labels: Dict[str, str] = {}
+        self.tabs = TabViewCompat(self)
+
         self._build_ui()
+        self.show_page("live_attendance")
         self.refresh_all_data()
 
     def get_face_recognizer(self):
@@ -69,21 +121,32 @@ class AttendanceManagerApp(ctk.CTk):
         """Toggle between Dark and Light appearance modes."""
         mode = "Dark" if "Dark" in mode_str else "Light"
         ctk.set_appearance_mode(mode)
+        self._update_nav_styles()
 
     def _build_ui(self) -> None:
-        """Create tabbed navigation and layout."""
-        # Top Header Bar
-        header = ctk.CTkFrame(self, height=65, corner_radius=0, fg_color=("#ffffff", "#161822"))
+        """Create header, collapsible sidebar navigation, and main content area."""
+        # =====================================================================
+        # 1. TOP HEADER BAR
+        # =====================================================================
+        header = ctk.CTkFrame(
+            self,
+            height=60,
+            corner_radius=0,
+            fg_color=("#ffffff", "#11131a"),
+            border_width=1,
+            border_color=("#e2e8f0", "#1e2433")
+        )
         header.pack(fill="x", side="top")
+        header.pack_propagate(False)
 
-        # Left Branding
+        # Left Branding: Bus Icon, Title & Subtitle
         brand_frame = ctk.CTkFrame(header, fg_color="transparent")
-        brand_frame.pack(side="left", padx=20, pady=10)
+        brand_frame.pack(side="left", padx=18, pady=8)
 
         title_lbl = ctk.CTkLabel(
             brand_frame,
             text="🚌 FLEET ATTENDANCE MANAGER",
-            font=ctk.CTkFont(size=20, weight="bold"),
+            font=ctk.CTkFont(size=17, weight="bold"),
             text_color=("#0284c7", "#38bdf8")
         )
         title_lbl.pack(anchor="w")
@@ -98,15 +161,15 @@ class AttendanceManagerApp(ctk.CTk):
 
         # Right Header Controls
         header_right = ctk.CTkFrame(header, fg_color="transparent")
-        header_right.pack(side="right", padx=15, pady=10)
+        header_right.pack(side="right", padx=16, pady=10)
 
         # Theme Switcher Segmented Button
         self.theme_btn = ctk.CTkSegmentedButton(
             header_right,
             values=["🌙 Dark", "☀️ Light"],
             command=self._on_theme_changed,
-            width=130,
-            height=32
+            width=120,
+            height=30
         )
         self.theme_btn.set("🌙 Dark")
         self.theme_btn.pack(side="right", padx=(8, 0))
@@ -115,13 +178,13 @@ class AttendanceManagerApp(ctk.CTk):
         settings_btn = ctk.CTkButton(
             header_right,
             text="⚙️ Settings",
-            width=95,
-            height=32,
-            fg_color=("#e2e8f0", "#334155"),
+            width=90,
+            height=30,
+            fg_color=("#e2e8f0", "#1e293b"),
             text_color=("#0f172a", "#f8fafc"),
-            hover_color=("#cbd5e1", "#475569"),
+            hover_color=("#cbd5e1", "#334155"),
             font=ctk.CTkFont(size=12, weight="bold"),
-            command=lambda: self.tabs.set("⚙️ Cloud Settings")
+            command=lambda: self.show_page("cloud_settings")
         )
         settings_btn.pack(side="right", padx=8)
 
@@ -133,16 +196,158 @@ class AttendanceManagerApp(ctk.CTk):
         )
         self.status_lbl.pack(side="right", padx=12)
 
-        # Main Tabview
-        self.tabs = ctk.CTkTabview(self, fg_color=("#f1f5f9", "#0f1117"))
-        self.tabs.pack(fill="both", expand=True, padx=15, pady=8)
+        # =====================================================================
+        # 2. BODY CONTAINER (SIDEBAR + MAIN CONTENT AREA)
+        # =====================================================================
+        self.body_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.body_container.pack(fill="both", expand=True)
 
-        self.tab_attendance = self.tabs.add("📋 Live Attendance")
-        self.tab_students = self.tabs.add("👥 Student Directory & Bus Assign")
-        self.tab_register = self.tabs.add("➕ Register Student (Live Camera)")
-        self.tab_reports = self.tabs.add("📊 Reports & CSV Export")
-        self.tab_settings = self.tabs.add("⚙️ Cloud Settings")
+        # Left Sidebar Frame
+        self.sidebar = ctk.CTkFrame(
+            self.body_container,
+            width=self.EXPANDED_WIDTH,
+            corner_radius=0,
+            fg_color=("#f8fafc", "#11131a"),
+            border_width=1,
+            border_color=("#e2e8f0", "#1e2433")
+        )
+        self.sidebar.pack(side="left", fill="y")
+        self.sidebar.pack_propagate(False)
 
+        # Main Content Area Frame (Right)
+        self.content_area = ctk.CTkFrame(
+            self.body_container,
+            corner_radius=0,
+            fg_color=("#f1f5f9", "#0b0c10")
+        )
+        self.content_area.pack(side="right", fill="both", expand=True)
+
+        # =====================================================================
+        # 3. SIDEBAR NAVIGATION ITEMS
+        # =====================================================================
+        # WORKSPACE Section Header
+        self.workspace_lbl = ctk.CTkLabel(
+            self.sidebar,
+            text="WORKSPACE",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=("#64748b", "#64748b"),
+            anchor="w"
+        )
+        self.workspace_lbl.pack(fill="x", padx=16, pady=(16, 6))
+
+        self.nav_items_config = [
+            ("live_attendance", "⊞", "Live Attendance", "WORKSPACE"),
+            ("student_directory", "👥", "Student Directory", "WORKSPACE"),
+            ("bus_management", "🚌", "Bus Management", "WORKSPACE"),
+            ("register_student", "👤+", "Register Student", "WORKSPACE"),
+            ("reports", "📊", "Reports & Export", "WORKSPACE"),
+            ("cloud_settings", "☁️", "Cloud Settings", "SYSTEM"),
+            ("settings", "⚙️", "Settings", "SYSTEM"),
+        ]
+
+        # Add WORKSPACE buttons
+        for key, icon, label, group in self.nav_items_config:
+            if group == "WORKSPACE":
+                self.nav_icons[key] = icon
+                self.nav_labels[key] = label
+                btn = ctk.CTkButton(
+                    self.sidebar,
+                    text=f"  {icon}  {label}",
+                    font=ctk.CTkFont(size=13, weight="bold"),
+                    height=38,
+                    corner_radius=8,
+                    anchor="w",
+                    command=lambda k=key: self.show_page(k)
+                )
+                btn.pack(fill="x", padx=10, pady=2)
+                self.nav_buttons[key] = btn
+
+        # SYSTEM Section Header
+        self.system_lbl = ctk.CTkLabel(
+            self.sidebar,
+            text="SYSTEM",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=("#64748b", "#64748b"),
+            anchor="w"
+        )
+        self.system_lbl.pack(fill="x", padx=16, pady=(16, 6))
+
+        # Add SYSTEM buttons
+        for key, icon, label, group in self.nav_items_config:
+            if group == "SYSTEM":
+                self.nav_icons[key] = icon
+                self.nav_labels[key] = label
+                btn = ctk.CTkButton(
+                    self.sidebar,
+                    text=f"  {icon}  {label}",
+                    font=ctk.CTkFont(size=13, weight="bold"),
+                    height=38,
+                    corner_radius=8,
+                    anchor="w",
+                    command=lambda k=key: self.show_page(k)
+                )
+                btn.pack(fill="x", padx=10, pady=2)
+                self.nav_buttons[key] = btn
+
+        # Spacer to push Collapse button to bottom
+        sidebar_spacer = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        sidebar_spacer.pack(fill="both", expand=True)
+
+        # Divider line
+        div_frame = ctk.CTkFrame(self.sidebar, height=1, fg_color=("#e2e8f0", "#1e2433"))
+        div_frame.pack(fill="x", padx=12, pady=(4, 6))
+
+        # Bottom Collapse/Expand Sidebar Button
+        self.collapse_btn = ctk.CTkButton(
+            self.sidebar,
+            text="  ◧  Collapse sidebar",
+            font=ctk.CTkFont(size=12),
+            fg_color="transparent",
+            text_color=("#64748b", "#94a3b8"),
+            hover_color=("#e2e8f0", "#1e293b"),
+            height=36,
+            corner_radius=8,
+            anchor="w",
+            command=self.toggle_sidebar
+        )
+        self.collapse_btn.pack(fill="x", padx=10, pady=(0, 12))
+
+        # =====================================================================
+        # 4. MAIN CONTENT AREA HEADER & PAGES CONTAINER
+        # =====================================================================
+        self.page_header_frame = ctk.CTkFrame(self.content_area, fg_color="transparent")
+        self.page_header_frame.pack(fill="x", padx=20, pady=(14, 4))
+
+        self.page_title_lbl = ctk.CTkLabel(
+            self.page_header_frame,
+            text="Live Attendance",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=("#0f172a", "#f8fafc"),
+            anchor="w"
+        )
+        self.page_title_lbl.pack(anchor="w")
+
+        self.page_subtitle_lbl = ctk.CTkLabel(
+            self.page_header_frame,
+            text="Monitor today's student boarding activity across your fleet.",
+            font=ctk.CTkFont(size=12),
+            text_color=("#64748b", "#94a3b8"),
+            anchor="w"
+        )
+        self.page_subtitle_lbl.pack(anchor="w", pady=(2, 0))
+
+        # Container holding all page frames
+        self.pages_container = ctk.CTkFrame(self.content_area, fg_color="transparent")
+        self.pages_container.pack(fill="both", expand=True, padx=14, pady=(2, 10))
+
+        # Individual Page Frames
+        self.tab_attendance = ctk.CTkFrame(self.pages_container, fg_color="transparent")
+        self.tab_students = ctk.CTkFrame(self.pages_container, fg_color="transparent")
+        self.tab_register = ctk.CTkFrame(self.pages_container, fg_color="transparent")
+        self.tab_reports = ctk.CTkFrame(self.pages_container, fg_color="transparent")
+        self.tab_settings = ctk.CTkFrame(self.pages_container, fg_color="transparent")
+
+        # Build each page's content inside its respective frame
         self._build_attendance_tab()
         self._build_students_tab()
         self._build_register_tab()
@@ -150,61 +355,185 @@ class AttendanceManagerApp(ctk.CTk):
         self._build_settings_tab()
 
     # =========================================================================
+    # SIDEBAR TOGGLING & NAVIGATION ROUTING
+    # =========================================================================
+
+    def toggle_sidebar(self) -> None:
+        """Collapse or expand the vertical left sidebar."""
+        self.is_sidebar_collapsed = not self.is_sidebar_collapsed
+        self._update_sidebar_view()
+
+    def _update_sidebar_view(self) -> None:
+        """Update sidebar widget appearances between expanded and collapsed modes."""
+        if self.is_sidebar_collapsed:
+            self.sidebar.configure(width=self.COLLAPSED_WIDTH)
+            self.workspace_lbl.configure(text="")
+            self.system_lbl.configure(text="")
+            for key, btn in self.nav_buttons.items():
+                icon = self.nav_icons[key]
+                btn.configure(text=icon, anchor="center")
+            self.collapse_btn.configure(text="◨", anchor="center")
+        else:
+            self.sidebar.configure(width=self.EXPANDED_WIDTH)
+            self.workspace_lbl.configure(text="WORKSPACE")
+            self.system_lbl.configure(text="SYSTEM")
+            for key, btn in self.nav_buttons.items():
+                icon = self.nav_icons[key]
+                label = self.nav_labels[key]
+                btn.configure(text=f"  {icon}  {label}", anchor="w")
+            self.collapse_btn.configure(text="  ◧  Collapse sidebar", anchor="w")
+        self._update_nav_styles()
+
+    def _update_nav_styles(self) -> None:
+        """Apply active highlight styling to selected sidebar item and reset others."""
+        for key, btn in self.nav_buttons.items():
+            is_active = (key == self.current_page_key) or (key == "settings" and self.current_page_key == "cloud_settings")
+            if is_active:
+                btn.configure(
+                    fg_color=("#e0f2fe", "#1e293b"),
+                    border_width=1,
+                    border_color=("#0284c7", "#38bdf8"),
+                    text_color=("#0284c7", "#38bdf8"),
+                    hover_color=("#bae6fd", "#334155")
+                )
+            else:
+                btn.configure(
+                    fg_color="transparent",
+                    border_width=0,
+                    text_color=("#475569", "#94a3b8"),
+                    hover_color=("#e2e8f0", "#1c1f2b")
+                )
+
+    def show_page(self, page_key: str) -> None:
+        """Navigate to requested page by key and update sidebar state."""
+        if page_key in ("cloud_settings", "settings"):
+            target_frame = self.tab_settings
+            actual_key = "cloud_settings"
+        elif page_key == "bus_management":
+            target_frame = self.tab_students
+            actual_key = "bus_management"
+        elif page_key == "student_directory":
+            target_frame = self.tab_students
+            actual_key = "student_directory"
+        elif page_key == "register_student":
+            target_frame = self.tab_register
+            actual_key = "register_student"
+        elif page_key == "reports":
+            target_frame = self.tab_reports
+            actual_key = "reports"
+        else:
+            target_frame = self.tab_attendance
+            actual_key = "live_attendance"
+
+        # Stop camera if switching away from registration page
+        if actual_key != "register_student" and getattr(self, "_cam_running", False):
+            self.stop_registration_camera()
+
+        # Hide all pages and show target page
+        for p in (self.tab_attendance, self.tab_students, self.tab_register, self.tab_reports, self.tab_settings):
+            p.pack_forget()
+
+        target_frame.pack(fill="both", expand=True)
+        self.current_page_key = actual_key
+
+        # Update page title & subtitle in header
+        title, sub = self.PAGE_METADATA.get(actual_key, ("Fleet Attendance Manager", ""))
+        self.page_title_lbl.configure(text=title)
+        self.page_subtitle_lbl.configure(text=sub)
+
+        # Update sidebar active highlights
+        self._update_nav_styles()
+
+    def set_tab(self, tab_name: str) -> None:
+        """Fuzzy page router for backward compatibility with self.tabs.set() calls."""
+        name = tab_name.lower()
+        if "attend" in name:
+            self.show_page("live_attendance")
+        elif "register" in name or "camera" in name:
+            self.show_page("register_student")
+        elif "student" in name or "directory" in name:
+            self.show_page("student_directory")
+        elif "bus" in name:
+            self.show_page("bus_management")
+        elif "report" in name or "csv" in name or "export" in name:
+            self.show_page("reports")
+        elif "cloud" in name or "setting" in name:
+            self.show_page("cloud_settings")
+        else:
+            self.show_page("live_attendance")
+
+    # =========================================================================
     # TAB 1: ATTENDANCE VIEW
     # =========================================================================
 
-    def _create_kpi_card(self, parent, col: int, title: str, initial_val: str, accent_color: str):
+    def _create_kpi_card(self, parent, row: int, col: int, title: str, initial_val: str, accent_color: str):
         card = ctk.CTkFrame(parent, fg_color=("#ffffff", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
-        card.grid(row=0, column=col, padx=6, pady=4, sticky="nsew")
+        card.grid(row=row, column=col, padx=6, pady=4, sticky="nsew")
         ctk.CTkLabel(card, text=title, font=ctk.CTkFont(size=12, weight="bold"), text_color=("#64748b", "#94a3b8")).pack(anchor="w", padx=14, pady=(10, 2))
-        val_lbl = ctk.CTkLabel(card, text=initial_val, font=ctk.CTkFont(size=22, weight="bold"), text_color=accent_color)
+        val_lbl = ctk.CTkLabel(card, text=initial_val, font=ctk.CTkFont(size=24, weight="bold"), text_color=accent_color)
         val_lbl.pack(anchor="w", padx=14, pady=(0, 10))
         return val_lbl
 
     def _build_attendance_tab(self) -> None:
-        # KPI Summary Cards
+        # KPI Summary Cards (2x2 grid matching dashboard screenshot)
         kpi_frame = ctk.CTkFrame(self.tab_attendance, fg_color="transparent")
-        kpi_frame.pack(fill="x", padx=10, pady=(6, 4))
-        kpi_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        kpi_frame.pack(fill="x", padx=10, pady=(2, 6))
+        kpi_frame.grid_columnconfigure((0, 1), weight=1)
 
-        self.kpi_card_total = self._create_kpi_card(kpi_frame, 0, "👥 Total Students", "0", "#38bdf8")
-        self.kpi_card_present = self._create_kpi_card(kpi_frame, 1, "✅ Present Today", "0", "#10b981")
-        self.kpi_card_absent = self._create_kpi_card(kpi_frame, 2, "⏳ Pending / Unmarked", "0", "#f59e0b")
-        self.kpi_card_buses = self._create_kpi_card(kpi_frame, 3, "🚌 Active Fleet Buses", "0", "#a78bfa")
+        self.kpi_card_total = self._create_kpi_card(kpi_frame, 0, 0, "Total Students", "0", "#38bdf8")
+        self.kpi_card_present = self._create_kpi_card(kpi_frame, 0, 1, "Present Today", "0", "#10b981")
+        self.kpi_card_absent = self._create_kpi_card(kpi_frame, 1, 0, "Pending / Unmarked", "0", "#f59e0b")
+        self.kpi_card_buses = self._create_kpi_card(kpi_frame, 1, 1, "Active Fleet Buses", "0", "#a78bfa")
 
-        # Filters Toolbar
-        top_ctrl = ctk.CTkFrame(self.tab_attendance, fg_color=("#ffffff", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
-        top_ctrl.pack(fill="x", padx=10, pady=6)
+        # Recent Attendance Card Container
+        att_card = ctk.CTkFrame(self.tab_attendance, fg_color=("#ffffff", "#161822"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
+        att_card.pack(fill="both", expand=True, padx=10, pady=(4, 6))
 
-        ctk.CTkLabel(top_ctrl, text="Filter Bus:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(15, 5), pady=10)
+        # Recent Attendance Header & Filters Bar
+        top_ctrl = ctk.CTkFrame(att_card, fg_color="transparent")
+        top_ctrl.pack(fill="x", padx=14, pady=(10, 6))
+
+        ctk.CTkLabel(
+            top_ctrl,
+            text="Recent Attendance",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=("#0f172a", "#f8fafc")
+        ).pack(side="left")
+
+        filter_box = ctk.CTkFrame(top_ctrl, fg_color="transparent")
+        filter_box.pack(side="right")
+
+        ctk.CTkLabel(filter_box, text="Bus:", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(8, 4))
         self.bus_filter_var = ctk.StringVar(value="All Buses")
         self.bus_combo = ctk.CTkComboBox(
-            top_ctrl,
+            filter_box,
             variable=self.bus_filter_var,
             values=["All Buses"],
-            width=130,
+            width=120,
+            height=28,
             command=lambda _: self.apply_attendance_filters()
         )
-        self.bus_combo.pack(side="left", padx=5)
+        self.bus_combo.pack(side="left", padx=4)
 
-        ctk.CTkLabel(top_ctrl, text="Date:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(15, 5))
-        self.date_entry = ctk.CTkEntry(top_ctrl, width=110)
+        ctk.CTkLabel(filter_box, text="Date:", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(10, 4))
+        self.date_entry = ctk.CTkEntry(filter_box, width=105, height=28)
         self.date_entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
-        self.date_entry.pack(side="left", padx=5)
+        self.date_entry.pack(side="left", padx=4)
 
         refresh_btn = ctk.CTkButton(
-            top_ctrl,
-            text="🔄 Refresh Data",
-            font=ctk.CTkFont(weight="bold"),
-            width=120,
+            filter_box,
+            text="🔄 Refresh",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            width=95,
+            height=28,
             fg_color="#0284c7",
             hover_color="#0369a1",
             command=self.refresh_all_data
         )
-        refresh_btn.pack(side="left", padx=15)
+        refresh_btn.pack(side="left", padx=(8, 0))
 
-        # Attendance Table (Scrollable)
-        self.att_scroll = ctk.CTkScrollableFrame(self.tab_attendance, fg_color=("#ffffff", "#161822"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
+        # Attendance Table (Scrollable) inside att_card
+        self.att_scroll = ctk.CTkScrollableFrame(att_card, fg_color="transparent")
         self.att_scroll.pack(fill="both", expand=True, padx=10, pady=(4, 10))
 
     def render_attendance_table(self, records: List[Dict[str, Any]]) -> None:
@@ -258,8 +587,8 @@ class AttendanceManagerApp(ctk.CTk):
     # =========================================================================
 
     def _build_students_tab(self) -> None:
-        ctrl = ctk.CTkFrame(self.tab_students, fg_color="#1c1f2b", corner_radius=8)
-        ctrl.pack(fill="x", padx=10, pady=10)
+        ctrl = ctk.CTkFrame(self.tab_students, fg_color=("#ffffff", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
+        ctrl.pack(fill="x", padx=10, pady=(6, 8))
 
         goto_register_btn = ctk.CTkButton(
             ctrl,
@@ -271,7 +600,7 @@ class AttendanceManagerApp(ctk.CTk):
         )
         goto_register_btn.pack(side="left", padx=15, pady=10)
 
-        ctk.CTkLabel(ctrl, text="Filter Bus:").pack(side="left", padx=(15, 5))
+        ctk.CTkLabel(ctrl, text="Filter Bus:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(15, 5))
         self.stu_bus_filter_var = ctk.StringVar(value="All Buses")
         self.stu_bus_combo = ctk.CTkComboBox(
             ctrl,
@@ -286,23 +615,24 @@ class AttendanceManagerApp(ctk.CTk):
             ctrl,
             text="🚌 Add Bus",
             width=90,
-            fg_color="#334155",
-            hover_color="#475569",
+            fg_color=("#e2e8f0", "#334155"),
+            text_color=("#0f172a", "#f8fafc"),
+            hover_color=("#cbd5e1", "#475569"),
             font=ctk.CTkFont(weight="bold"),
             command=self.prompt_add_new_bus
         )
         add_bus_btn.pack(side="left", padx=5)
 
-        ctk.CTkLabel(ctrl, text="Search:").pack(side="left", padx=(15, 5))
+        ctk.CTkLabel(ctrl, text="Search:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(15, 5))
         self.search_entry = ctk.CTkEntry(ctrl, placeholder_text="ID or Name...", width=160)
         self.search_entry.pack(side="left", padx=5)
         self.search_entry.bind("<KeyRelease>", lambda _: self.render_students_table())
 
-        self.students_scroll = ctk.CTkScrollableFrame(self.tab_students, fg_color="#161822")
+        self.students_scroll = ctk.CTkScrollableFrame(self.tab_students, fg_color=("#ffffff", "#161822"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
         self.students_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
     def switch_to_register_tab(self) -> None:
-        self.tabs.set("➕ Register Student (Live Camera)")
+        self.show_page("register_student")
         self.start_registration_camera()
 
     def render_students_table(self) -> None:
@@ -324,14 +654,14 @@ class AttendanceManagerApp(ctk.CTk):
             filtered.append(s)
 
         # Table Header
-        hdr = ctk.CTkFrame(self.students_scroll, fg_color="#242938", height=35)
+        hdr = ctk.CTkFrame(self.students_scroll, fg_color=("#e2e8f0", "#242938"), height=35, corner_radius=6)
         hdr.pack(fill="x", pady=2)
         cols = [("ID", 80), ("Full Name", 190), ("Class", 90), ("Assigned Bus", 150), ("Status", 90), ("Actions", 130)]
         for cname, w in cols:
             ctk.CTkLabel(hdr, text=cname, width=w, font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5, pady=5)
 
         if not filtered:
-            ctk.CTkLabel(self.students_scroll, text="No registered students found.", text_color="#64748b").pack(pady=40)
+            ctk.CTkLabel(self.students_scroll, text="No registered students found.", text_color=("#64748b", "#94a3b8")).pack(pady=40)
             return
 
         for s in filtered:
@@ -342,7 +672,7 @@ class AttendanceManagerApp(ctk.CTk):
             if not sid:
                 continue
 
-            row = ctk.CTkFrame(self.students_scroll, fg_color="#1c1f2b", height=38)
+            row = ctk.CTkFrame(self.students_scroll, fg_color=("#f8fafc", "#1c1f2b"), height=38, corner_radius=6)
             row.pack(fill="x", pady=2)
 
             ctk.CTkLabel(row, text=sid, width=80, font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5)
@@ -431,11 +761,11 @@ class AttendanceManagerApp(ctk.CTk):
 
     def _build_register_tab(self) -> None:
         """Build registration UI with embedded camera view on right and student form on left."""
-        container = ctk.CTkFrame(self.tab_register, fg_color="#0f1117")
+        container = ctk.CTkFrame(self.tab_register, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Left Column: Student Details Form
-        left_form = ctk.CTkFrame(container, fg_color="#1c1f2b", width=360, corner_radius=10)
+        left_form = ctk.CTkFrame(container, fg_color=("#ffffff", "#1c1f2b"), width=360, corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
         left_form.pack(side="left", fill="y", padx=(0, 10), pady=0)
         left_form.pack_propagate(False)
 
@@ -443,7 +773,7 @@ class AttendanceManagerApp(ctk.CTk):
             left_form,
             text="Student Details",
             font=ctk.CTkFont(size=18, weight="bold"),
-            text_color="#38bdf8"
+            text_color=("#0284c7", "#38bdf8")
         ).pack(anchor="w", padx=20, pady=(18, 12))
 
         ctk.CTkLabel(left_form, text="Student ID:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=20, pady=(6, 2))
@@ -464,13 +794,13 @@ class AttendanceManagerApp(ctk.CTk):
         self.reg_bus_menu.pack(fill="x", padx=20, pady=(0, 20))
 
         # Instructions card
-        info_box = ctk.CTkFrame(left_form, fg_color="#161822", corner_radius=8)
+        info_box = ctk.CTkFrame(left_form, fg_color=("#f1f5f9", "#161822"), corner_radius=8)
         info_box.pack(fill="x", padx=20, pady=(0, 20))
         ctk.CTkLabel(
             info_box,
             text="📌 Instructions:\n• Stand in front of camera\n• Ensure exactly 1 face is visible\n• Box turns Green when ready\n• Click 'Capture & Register'",
             justify="left",
-            text_color="#94a3b8"
+            text_color=("#64748b", "#94a3b8")
         ).pack(padx=12, pady=12)
 
         self.reg_save_btn = ctk.CTkButton(
@@ -485,7 +815,7 @@ class AttendanceManagerApp(ctk.CTk):
         self.reg_save_btn.pack(fill="x", padx=20, pady=(0, 10))
 
         # Right Column: Embedded Camera Feed
-        right_cam = ctk.CTkFrame(container, fg_color="#1c1f2b", corner_radius=10)
+        right_cam = ctk.CTkFrame(container, fg_color=("#ffffff", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
         right_cam.pack(side="right", fill="both", expand=True)
 
         cam_hdr = ctk.CTkFrame(right_cam, fg_color="transparent")
@@ -718,14 +1048,14 @@ class AttendanceManagerApp(ctk.CTk):
 
         # Refresh directory and switch to students tab
         self.refresh_all_data()
-        self.tabs.set("👥 Student Directory & Bus Assign")
+        self.show_page("student_directory")
 
     # =========================================================================
     # TAB 4: REPORTS & CSV EXPORT
     # =========================================================================
 
     def _build_reports_tab(self) -> None:
-        frame = ctk.CTkFrame(self.tab_reports, fg_color="#1c1f2b", corner_radius=8)
+        frame = ctk.CTkFrame(self.tab_reports, fg_color=("#ffffff", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
         frame.pack(fill="both", expand=True, padx=20, pady=20)
 
         ctk.CTkLabel(
@@ -792,20 +1122,23 @@ class AttendanceManagerApp(ctk.CTk):
 
     def refresh_all_data(self) -> None:
         self.status_lbl.configure(text="Syncing with Supabase...", text_color="#fbbf24")
-        threading.Thread(target=self._async_fetch_all, daemon=True).start()
+        date_val = self.date_entry.get().strip() if hasattr(self, "date_entry") else datetime.now().strftime("%Y-%m-%d")
+        bus_val = None if (not hasattr(self, "bus_filter_var") or self.bus_filter_var.get() == "All Buses") else self.bus_filter_var.get()
+        threading.Thread(target=self._async_fetch_all, args=(date_val, bus_val), daemon=True).start()
 
-    def _async_fetch_all(self) -> None:
+    def _async_fetch_all(self, date_val: str, bus_val: Optional[str]) -> None:
         buses = self.cloud.get_buses()
         students = self.cloud.get_students(active_only=False)
-        date_val = self.date_entry.get().strip()
-        bus_val = None if self.bus_filter_var.get() == "All Buses" else self.bus_filter_var.get()
         records = self.cloud.get_attendance(date_str=date_val, bus_id=bus_val)
 
         self.buses = buses
         self.students = students
         self.attendance_records = records
 
-        self.after(0, self._update_ui_after_fetch)
+        try:
+            self.after(0, self._update_ui_after_fetch)
+        except Exception:
+            pass
 
     def _update_ui_after_fetch(self) -> None:
         # Discover all unique bus IDs from buses table + students + attendance records
@@ -841,7 +1174,7 @@ class AttendanceManagerApp(ctk.CTk):
         self.kpi_card_buses.configure(text=str(len(sorted_buses)))
 
         self.status_lbl.configure(
-            text=f"● Connected | {time.strftime('%H:%M:%S')}",
+            text=f"✔ Connected | {time.strftime('%H:%M:%S')}",
             text_color="#10b981"
         )
         self.render_attendance_table(self.attendance_records)
