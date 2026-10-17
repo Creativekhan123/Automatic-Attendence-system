@@ -7,15 +7,17 @@ import os
 import re
 import json
 import logging
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, TYPE_CHECKING, cast
 from datetime import datetime
 
+if TYPE_CHECKING:
+    from supabase import Client
+
 try:
-    from supabase import create_client, Client
+    from supabase import create_client, Client  # type: ignore
     _SUPABASE_AVAILABLE = True
 except ImportError:
     create_client = None
-    Client = Any
     _SUPABASE_AVAILABLE = False
 
 try:
@@ -191,7 +193,7 @@ class SupabaseService:
             return []
         try:
             res = self.client.table("buses").select("*").order("bus_id").execute()
-            return [dict(x) for x in res.data] if res.data else []
+            return [cast(Dict[str, Any], x) for x in res.data] if res.data else []
         except Exception as e:
             logger.error(f"Error fetching buses from Supabase: {e}")
             self._last_error = str(e)
@@ -271,7 +273,7 @@ class SupabaseService:
             if active_only:
                 query = query.eq("is_active", True)
             res = query.order("student_id").execute()
-            return [dict(x) for x in res.data] if res.data else []
+            return [cast(Dict[str, Any], x) for x in res.data] if res.data else []
         except Exception as e:
             logger.error(f"Error fetching students from Supabase: {e}")
             self._last_error = str(e)
@@ -431,7 +433,7 @@ class SupabaseService:
                 .execute()
             )
             rows = res.data or []
-            return rows[0] if rows else None
+            return cast(Dict[str, Any], rows[0]) if rows else None
         except Exception as e:
             self._last_error = str(e)
             return None

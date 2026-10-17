@@ -35,7 +35,7 @@ class Camera:
         Returns:
             A tuple of (success_flag, frame_image).
         """
-        if not self.is_opened():
+        if self._cap is None or not self.is_opened():
             return False, None
 
         ret, frame = self._cap.read()

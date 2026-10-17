@@ -19,8 +19,9 @@ from dotenv import load_dotenv
 # Automatically load environment variables from project root or bundled runtime .env
 _candidates = []
 if getattr(sys, "frozen", False):
-    if hasattr(sys, "_MEIPASS"):
-        _candidates.append(os.path.join(sys._MEIPASS, ".env"))
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        _candidates.append(os.path.join(meipass, ".env"))
     _exe_dir = os.path.dirname(sys.executable)
     _candidates.append(os.path.join(_exe_dir, ".env"))
     _candidates.append(os.path.join(_exe_dir, "_internal", ".env"))

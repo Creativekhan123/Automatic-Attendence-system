@@ -8,5 +8,15 @@
     ".",
     "src",
     "fleet_system"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        ".",
+        "src",
+        "fleet_system"
+      ]
+    }
   ]
 }

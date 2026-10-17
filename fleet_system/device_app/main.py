@@ -28,7 +28,7 @@ from src.camera import Camera
 from src.face_recognizer import FaceRecognizer
 from fleet_system.device_app.local_db import DeviceDatabase
 from fleet_system.device_app.sync_worker import DeviceSyncWorker
-from fleet_system.shared.cloud_client import FleetCloudClient
+from fleet_system.shared.cloud_client import FleetCloudClient, save_cloud_credentials
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("DeviceApp")
@@ -289,7 +289,6 @@ class AttendanceDeviceApp:
 
     def prompt_configure_credentials(self) -> None:
         """Prompt administrator to configure Supabase URL & Key with persistent confirmation."""
-        from fleet_system.shared.cloud_client import save_cloud_credentials
 
         cur_url, cur_key = self.sync_worker.cloud.get_current_credentials()
 

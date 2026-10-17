@@ -1,13 +1,13 @@
 import cv2
 import os
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import numpy as np
 
 
 class FaceDetector:
     """Detects human faces in images using OpenCV Haar Cascade Classifier."""
 
-    def __init__(self, cascade_path: str = None) -> None:
+    def __init__(self, cascade_path: Optional[str] = None) -> None:
         """Initialize the Haar Cascade detector.
 
         Args:
