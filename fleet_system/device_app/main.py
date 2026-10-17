@@ -18,7 +18,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import cv2
 import numpy as np
 
-# Ensure root is on path so imports resolve cleanly
+# Ensure project root is on sys.path so imports resolve cleanly
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(_CURRENT_DIR))
 if _PROJECT_ROOT not in sys.path:

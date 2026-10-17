@@ -187,10 +187,34 @@ python dashboard.py
 
 ---
 
+## FleetPass Mobile App (`android/`) - Android & Web Portal
+
+A sleek, responsive mobile progressive web application built with **React**, **Vite**, and **Supabase Realtime Cloud API** for teachers and transport staff to manage student attendance directly from Android smartphones or tablets without requiring heavy Android Studio installations.
+
+```powershell
+cd android
+npm install
+npm run dev -- --host
+```
+
+- **Local Access:** `http://localhost:5173/`
+- **Android Phone Access:** `http://<your-computer-ip>:5173/` (Open in Chrome on your Android phone on the same Wi-Fi network and tap **"Add to Home Screen"** to install as a standalone native-feeling Android app).
+
+### Mobile Features:
+1. **Live Attendance Dashboard**: Real-time circular percentage meter, boarded vs pending counters, student cards with timestamped `PRESENT` badges.
+2. **Student Directory**: Multi-field search, instant bus reassignment edit modal, and safe delete.
+3. **Biometric & Photo Enrollment**: Camera preview with face alignment target guide and next ID suggester.
+4. **Fleet Bus Overview**: Route management and student capacity counters.
+5. **Certified CSV Export**: One-tap download of official attendance logs.
+6. **Cloud Connectivity Tester**: In-app latency ping and Supabase configuration editor.
+
+---
+
 ## Known Limitations
 
 - Requires frontal or moderate 3/4 face angles for detection.
 - Extreme low light or heavy backlight may degrade camera detection.
 - Anti-spoofing and liveness detection are not yet implemented (scheduled for later parts).
+
 
 

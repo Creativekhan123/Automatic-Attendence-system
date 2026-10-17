@@ -5,7 +5,8 @@
     "tests"
   ],
   "extraPaths": [
-    "d:\\AutoAttendance_System",
-    "C:\\Users\\K12 Techno\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages"
+    ".",
+    "src",
+    "fleet_system"
   ]
 }
