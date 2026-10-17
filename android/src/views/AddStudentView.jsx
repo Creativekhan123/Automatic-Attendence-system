@@ -39,7 +39,11 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
 
   // Continuous real-time face detection loop on active webcam
   const runLiveFaceDetection = useCallback(async () => {
-    if (!videoRef.current || videoRef.current.readyState < 2) return;
+    if (!videoRef.current) return;
+    if (videoRef.current.readyState < 2) {
+      setFaceCheckMessage('Connecting camera feed...');
+      return;
+    }
 
     try {
       const result = await detectFaces(videoRef.current);
@@ -48,13 +52,15 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
       setDetectedBox(result.box || null);
     } catch (e) {
       console.warn('Live detection error:', e);
+      setFaceCheckStatus('READY');
+      setFaceCheckMessage('Camera feed active');
     }
   }, []);
 
   const startCamera = async () => {
     setCameraError(null);
     setFaceCheckStatus('CHECKING');
-    setFaceCheckMessage('Initializing AI Face Detector...');
+    setFaceCheckMessage('Starting camera feed...');
 
     // 1. Check if navigator.mediaDevices is supported in current context
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -122,6 +128,21 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
     checkIntervalRef.current = setInterval(runLiveFaceDetection, 350);
   };
 
+  // Pre-load detector on mount for instant zero-delay face checks
+  useEffect(() => {
+    getFaceDetector().catch((err) => console.warn('Preload detector:', err));
+  }, []);
+
+  // Ensure stream is attached to video element as soon as camera becomes active
+  useEffect(() => {
+    if (isCameraActive && streamRef.current && videoRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        videoRef.current.srcObject = streamRef.current;
+      }
+      videoRef.current.play().catch((err) => console.warn('Video play err:', err));
+    }
+  }, [isCameraActive]);
+
   const stopCamera = () => {
     if (checkIntervalRef.current) {
       clearInterval(checkIntervalRef.current);
@@ -132,6 +153,8 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
       streamRef.current = null;
     }
     setIsCameraActive(false);
+    setFaceCheckStatus('IDLE');
+    setFaceCheckMessage('Camera inactive');
   };
 
   useEffect(() => {
@@ -350,10 +373,22 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
             {isCameraActive ? (
               <>
                 <video
-                  ref={videoRef}
+                  ref={(el) => {
+                    videoRef.current = el;
+                    if (el && streamRef.current && el.srcObject !== streamRef.current) {
+                      el.srcObject = streamRef.current;
+                      el.play().catch((e) => console.warn('play error:', e));
+                    }
+                  }}
                   autoPlay
                   playsInline
                   muted
+                  onLoadedData={() => {
+                    if (videoRef.current) {
+                      videoRef.current.play().catch(() => {});
+                    }
+                    runLiveFaceDetection();
+                  }}
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />
 
