@@ -7,6 +7,7 @@ Provides high-performance, resilient REST operations for:
 - Attendance query and idempotent cloud upload
 """
 import os
+import sys
 import re
 import json
 import logging
@@ -15,21 +16,97 @@ from datetime import datetime
 import requests
 from dotenv import load_dotenv
 
-# Automatically load environment variables from project root .env
+# Automatically load environment variables from project root or bundled runtime .env
+_candidates = []
+if getattr(sys, "frozen", False):
+    if hasattr(sys, "_MEIPASS"):
+        _candidates.append(os.path.join(sys._MEIPASS, ".env"))
+    _exe_dir = os.path.dirname(sys.executable)
+    _candidates.append(os.path.join(_exe_dir, ".env"))
+    _candidates.append(os.path.join(_exe_dir, "_internal", ".env"))
+
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(_CURRENT_DIR))
-_env_path = os.path.join(_PROJECT_ROOT, ".env")
-if os.path.exists(_env_path):
-    load_dotenv(_env_path)
+_candidates.extend([
+    os.path.join(_PROJECT_ROOT, ".env"),
+    os.path.join(os.getcwd(), ".env")
+])
+
+for _c in _candidates:
+    if os.path.exists(_c):
+        load_dotenv(_c)
+        break
 else:
     load_dotenv()
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
+# Built-in credentials embedded into the application binary so it works out-of-the-box on any desktop
+_EMBEDDED_DEFAULT_URL = "https://ibowhhonlxzsikgijwnl.supabase.co"
+_EMBEDDED_DEFAULT_KEY = "sb_publishable_KL45K5cqhbCWHaZ_9GmTAA_g62FEdRW"
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/") or _EMBEDDED_DEFAULT_URL
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip() or _EMBEDDED_DEFAULT_KEY
 FLEET_SYNC_TOKEN = os.environ.get("FLEET_SYNC_TOKEN", "PROTOTYPE_FLEET_SYNC_SECRET").strip()
 SYNC_HTTP_TIMEOUT = float(os.environ.get("SYNC_HTTP_TIMEOUT", "15.0"))
 
 logger = logging.getLogger(__name__)
+
+
+def save_cloud_credentials(url: str, key: str) -> bool:
+    """Save updated Supabase credentials to .env file and active environment."""
+    url = url.strip().rstrip("/")
+    key = key.strip()
+
+    # Determine primary target .env path
+    if getattr(sys, "frozen", False):
+        target_dir = os.path.dirname(sys.executable)
+    else:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        target_dir = os.path.dirname(os.path.dirname(current_dir))
+
+    target_env = os.path.join(target_dir, ".env")
+
+    # Read existing lines if file exists to preserve other configs
+    lines = []
+    if os.path.exists(target_env):
+        try:
+            with open(target_env, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+
+    new_lines = []
+    url_written = False
+    key_written = False
+
+    for line in lines:
+        if line.strip().startswith("SUPABASE_URL="):
+            new_lines.append(f"SUPABASE_URL={url}\n")
+            url_written = True
+        elif line.strip().startswith("SUPABASE_KEY="):
+            new_lines.append(f"SUPABASE_KEY={key}\n")
+            key_written = True
+        else:
+            new_lines.append(line)
+
+    if not url_written:
+        new_lines.append(f"SUPABASE_URL={url}\n")
+    if not key_written:
+        new_lines.append(f"SUPABASE_KEY={key}\n")
+
+    try:
+        with open(target_env, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    except Exception as e:
+        logger.error(f"Failed to write .env file at {target_env}: {e}")
+        return False
+
+    # Update runtime environment and global variables
+    global SUPABASE_URL, SUPABASE_KEY
+    os.environ["SUPABASE_URL"] = url
+    os.environ["SUPABASE_KEY"] = key
+    SUPABASE_URL = url
+    SUPABASE_KEY = key
+    return True
 
 
 class FleetCloudClient:
@@ -48,6 +125,22 @@ class FleetCloudClient:
         self.timeout = timeout
         self.session = requests.Session()
         self._last_error: Optional[str] = None
+
+    def reconfigure(self, url: str, key: str) -> None:
+        """Update client credentials dynamically at runtime."""
+        self.url = url.strip().rstrip("/")
+        self.key = key.strip()
+        self.session.headers.update(self._get_headers())
+
+    def get_current_credentials(self) -> Tuple[str, str]:
+        """Return (url, key) currently in use."""
+        return self.url, self.key
+
+    def reset_to_defaults(self) -> Tuple[str, str]:
+        """Reset back to embedded factory default credentials."""
+        self.reconfigure(_EMBEDDED_DEFAULT_URL, _EMBEDDED_DEFAULT_KEY)
+        save_cloud_credentials(_EMBEDDED_DEFAULT_URL, _EMBEDDED_DEFAULT_KEY)
+        return _EMBEDDED_DEFAULT_URL, _EMBEDDED_DEFAULT_KEY
 
     def _get_headers(self, with_token: bool = False, prefer: Optional[str] = None) -> Dict[str, str]:
         headers = {

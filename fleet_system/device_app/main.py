@@ -278,6 +278,62 @@ class AttendanceDeviceApp:
             self.banner = (f"BUS UPDATED: {self.bus_id}", time.time() + 4.0, False)
             logger.info(f"Hardware successfully reconfigured to Bus: {self.bus_id}")
 
+    def prompt_configure_credentials(self) -> None:
+        """Prompt administrator in a safe Tkinter popup to configure Supabase URL & Key with confirmation."""
+        import tkinter as tk
+        from tkinter import simpledialog, messagebox
+        from fleet_system.shared.cloud_client import save_cloud_credentials
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+
+        cur_url, cur_key = self.sync_worker.cloud.get_current_credentials()
+
+        new_url = simpledialog.askstring(
+            "Configure Supabase URL",
+            f"Current URL:\n{cur_url}\n\nEnter Supabase Project URL (e.g. https://xyz.supabase.co):",
+            initialvalue=cur_url,
+            parent=root
+        )
+        if not new_url or not new_url.strip():
+            root.destroy()
+            return
+
+        new_key = simpledialog.askstring(
+            "Configure Supabase API Key",
+            f"Enter Supabase API Key (anon/publishable/service_role):",
+            initialvalue=cur_key,
+            parent=root
+        )
+        if not new_key or not new_key.strip():
+            root.destroy()
+            return
+
+        new_url = new_url.strip().rstrip("/")
+        new_key = new_key.strip()
+
+        confirmed = messagebox.askyesno(
+            "CONFIRM CLOUD CREDENTIALS UPDATE",
+            f"Are you ABSOLUTELY sure you want to update the Cloud Database credentials?\n\n"
+            f"New URL: {new_url}\n\n"
+            f"The device will now connect to this Supabase project for attendance and roster sync.",
+            parent=root
+        )
+        root.destroy()
+
+        if confirmed:
+            self.sync_worker.cloud.reconfigure(new_url, new_key)
+            ok, msg = self.sync_worker.cloud.test_connection()
+            save_cloud_credentials(new_url, new_key)
+            if ok:
+                self.banner = ("CLOUD CONNECTED & SAVED", time.time() + 4.0, False)
+                logger.info(f"Cloud credentials updated and verified successfully! ({new_url})")
+            else:
+                self.banner = ("CREDENTIALS SAVED (CHECK CONNECTION)", time.time() + 4.0, True)
+                logger.warning(f"Cloud credentials saved but test returned: {msg}")
+            self.sync_worker.trigger_immediate_sync()
+
     def run(self) -> None:
         """Main execution loop."""
         if not self.initialize():
@@ -286,7 +342,7 @@ class AttendanceDeviceApp:
 
         window_name = f"Fleet Attendance Device - {self.bus_id}"
         logger.info(f"Running device loop (Headless={self.headless}).")
-        logger.info("Controls: Press 'Q' to quit, Press 'C' to configure Bus ID.")
+        logger.info("Controls: Press 'Q' to quit, Press 'C' to configure Bus ID, Press 'S' to configure Cloud Settings.")
 
         try:
             while True:
@@ -306,6 +362,8 @@ class AttendanceDeviceApp:
                     elif key in (ord('c'), ord('C')):
                         self.prompt_reconfigure_device()
                         window_name = f"Fleet Attendance Device - {self.bus_id}"
+                    elif key in (ord('s'), ord('S')):
+                        self.prompt_configure_credentials()
                 else:
                     time.sleep(0.01)
 

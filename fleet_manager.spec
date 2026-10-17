@@ -18,6 +18,8 @@ project_datas = [
     ('src/__init__.py', 'src'),
     ('fleet_system', 'fleet_system'),
 ]
+if os.path.exists('.env'):
+    project_datas.append(('.env', '.'))
 
 _model_dir = os.path.join(os.path.expanduser('~'), '.insightface', 'models', 'buffalo_sc')
 model_datas = []

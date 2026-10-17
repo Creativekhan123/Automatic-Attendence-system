@@ -27,7 +27,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(_CURRENT_DIR))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from fleet_system.shared.cloud_client import FleetCloudClient
+from fleet_system.shared.cloud_client import FleetCloudClient, save_cloud_credentials
 from fleet_system.device_app.local_db import DeviceDatabase
 
 # Set CustomTkinter theme
@@ -65,93 +65,154 @@ class AttendanceManagerApp(ctk.CTk):
             self._recognizer = FaceRecognizer(model_name="buffalo_sc")
         return self._recognizer
 
+    def _on_theme_changed(self, mode_str: str) -> None:
+        """Toggle between Dark and Light appearance modes."""
+        mode = "Dark" if "Dark" in mode_str else "Light"
+        ctk.set_appearance_mode(mode)
+
     def _build_ui(self) -> None:
         """Create tabbed navigation and layout."""
         # Top Header Bar
-        header = ctk.CTkFrame(self, height=60, corner_radius=0, fg_color="#161822")
+        header = ctk.CTkFrame(self, height=65, corner_radius=0, fg_color=("#ffffff", "#161822"))
         header.pack(fill="x", side="top")
 
+        # Left Branding
+        brand_frame = ctk.CTkFrame(header, fg_color="transparent")
+        brand_frame.pack(side="left", padx=20, pady=10)
+
         title_lbl = ctk.CTkLabel(
-            header,
+            brand_frame,
             text="🚌 FLEET ATTENDANCE MANAGER",
             font=ctk.CTkFont(size=20, weight="bold"),
-            text_color="#38bdf8"
+            text_color=("#0284c7", "#38bdf8")
         )
-        title_lbl.pack(side="left", padx=20, pady=15)
+        title_lbl.pack(anchor="w")
+
+        sub_lbl = ctk.CTkLabel(
+            brand_frame,
+            text="Enterprise School Bus Cloud Workstation",
+            font=ctk.CTkFont(size=11),
+            text_color=("#64748b", "#94a3b8")
+        )
+        sub_lbl.pack(anchor="w")
+
+        # Right Header Controls
+        header_right = ctk.CTkFrame(header, fg_color="transparent")
+        header_right.pack(side="right", padx=15, pady=10)
+
+        # Theme Switcher Segmented Button
+        self.theme_btn = ctk.CTkSegmentedButton(
+            header_right,
+            values=["🌙 Dark", "☀️ Light"],
+            command=self._on_theme_changed,
+            width=130,
+            height=32
+        )
+        self.theme_btn.set("🌙 Dark")
+        self.theme_btn.pack(side="right", padx=(8, 0))
+
+        # Quick Settings Button
+        settings_btn = ctk.CTkButton(
+            header_right,
+            text="⚙️ Settings",
+            width=95,
+            height=32,
+            fg_color=("#e2e8f0", "#334155"),
+            text_color=("#0f172a", "#f8fafc"),
+            hover_color=("#cbd5e1", "#475569"),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=lambda: self.tabs.set("⚙️ Cloud Settings")
+        )
+        settings_btn.pack(side="right", padx=8)
 
         self.status_lbl = ctk.CTkLabel(
-            header,
-            text="Connecting to Supabase...",
-            font=ctk.CTkFont(size=13),
-            text_color="#94a3b8"
+            header_right,
+            text="● Connecting...",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#fbbf24"
         )
-        self.status_lbl.pack(side="right", padx=20)
+        self.status_lbl.pack(side="right", padx=12)
 
         # Main Tabview
-        self.tabs = ctk.CTkTabview(self, fg_color="#0f1117")
-        self.tabs.pack(fill="both", expand=True, padx=15, pady=10)
+        self.tabs = ctk.CTkTabview(self, fg_color=("#f1f5f9", "#0f1117"))
+        self.tabs.pack(fill="both", expand=True, padx=15, pady=8)
 
         self.tab_attendance = self.tabs.add("📋 Live Attendance")
         self.tab_students = self.tabs.add("👥 Student Directory & Bus Assign")
         self.tab_register = self.tabs.add("➕ Register Student (Live Camera)")
         self.tab_reports = self.tabs.add("📊 Reports & CSV Export")
+        self.tab_settings = self.tabs.add("⚙️ Cloud Settings")
 
         self._build_attendance_tab()
         self._build_students_tab()
         self._build_register_tab()
         self._build_reports_tab()
+        self._build_settings_tab()
 
     # =========================================================================
     # TAB 1: ATTENDANCE VIEW
     # =========================================================================
 
-    def _build_attendance_tab(self) -> None:
-        top_ctrl = ctk.CTkFrame(self.tab_attendance, fg_color="#1c1f2b", corner_radius=8)
-        top_ctrl.pack(fill="x", padx=10, pady=10)
+    def _create_kpi_card(self, parent, col: int, title: str, initial_val: str, accent_color: str):
+        card = ctk.CTkFrame(parent, fg_color=("#ffffff", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
+        card.grid(row=0, column=col, padx=6, pady=4, sticky="nsew")
+        ctk.CTkLabel(card, text=title, font=ctk.CTkFont(size=12, weight="bold"), text_color=("#64748b", "#94a3b8")).pack(anchor="w", padx=14, pady=(10, 2))
+        val_lbl = ctk.CTkLabel(card, text=initial_val, font=ctk.CTkFont(size=22, weight="bold"), text_color=accent_color)
+        val_lbl.pack(anchor="w", padx=14, pady=(0, 10))
+        return val_lbl
 
-        # Filters
-        ctk.CTkLabel(top_ctrl, text="Bus Filter:").pack(side="left", padx=(15, 5), pady=10)
+    def _build_attendance_tab(self) -> None:
+        # KPI Summary Cards
+        kpi_frame = ctk.CTkFrame(self.tab_attendance, fg_color="transparent")
+        kpi_frame.pack(fill="x", padx=10, pady=(6, 4))
+        kpi_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        self.kpi_card_total = self._create_kpi_card(kpi_frame, 0, "👥 Total Students", "0", "#38bdf8")
+        self.kpi_card_present = self._create_kpi_card(kpi_frame, 1, "✅ Present Today", "0", "#10b981")
+        self.kpi_card_absent = self._create_kpi_card(kpi_frame, 2, "⏳ Pending / Unmarked", "0", "#f59e0b")
+        self.kpi_card_buses = self._create_kpi_card(kpi_frame, 3, "🚌 Active Fleet Buses", "0", "#a78bfa")
+
+        # Filters Toolbar
+        top_ctrl = ctk.CTkFrame(self.tab_attendance, fg_color=("#ffffff", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
+        top_ctrl.pack(fill="x", padx=10, pady=6)
+
+        ctk.CTkLabel(top_ctrl, text="Filter Bus:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(15, 5), pady=10)
         self.bus_filter_var = ctk.StringVar(value="All Buses")
         self.bus_combo = ctk.CTkComboBox(
             top_ctrl,
             variable=self.bus_filter_var,
             values=["All Buses"],
+            width=130,
             command=lambda _: self.apply_attendance_filters()
         )
         self.bus_combo.pack(side="left", padx=5)
 
-        ctk.CTkLabel(top_ctrl, text="Date:").pack(side="left", padx=(15, 5))
+        ctk.CTkLabel(top_ctrl, text="Date:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(15, 5))
         self.date_entry = ctk.CTkEntry(top_ctrl, width=110)
         self.date_entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
         self.date_entry.pack(side="left", padx=5)
 
         refresh_btn = ctk.CTkButton(
             top_ctrl,
-            text="🔄 Refresh",
-            width=90,
+            text="🔄 Refresh Data",
+            font=ctk.CTkFont(weight="bold"),
+            width=120,
+            fg_color="#0284c7",
+            hover_color="#0369a1",
             command=self.refresh_all_data
         )
         refresh_btn.pack(side="left", padx=15)
 
-        # Summary KPIs
-        self.kpi_lbl = ctk.CTkLabel(
-            top_ctrl,
-            text="Total Present: 0",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color="#10b981"
-        )
-        self.kpi_lbl.pack(side="right", padx=20)
-
         # Attendance Table (Scrollable)
-        self.att_scroll = ctk.CTkScrollableFrame(self.tab_attendance, fg_color="#161822")
-        self.att_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.att_scroll = ctk.CTkScrollableFrame(self.tab_attendance, fg_color=("#ffffff", "#161822"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
+        self.att_scroll.pack(fill="both", expand=True, padx=10, pady=(4, 10))
 
     def render_attendance_table(self, records: List[Dict[str, Any]]) -> None:
         for widget in self.att_scroll.winfo_children():
             widget.destroy()
 
         # Header Row
-        hdr_frame = ctk.CTkFrame(self.att_scroll, fg_color="#242938", height=35)
+        hdr_frame = ctk.CTkFrame(self.att_scroll, fg_color=("#e2e8f0", "#242938"), height=36, corner_radius=6)
         hdr_frame.pack(fill="x", pady=2)
         cols = [("Time", 90), ("Date", 100), ("Student ID", 100), ("Student Name", 180), ("Bus ID", 100), ("Status", 90)]
         for col_name, w in cols:
@@ -159,19 +220,15 @@ class AttendanceManagerApp(ctk.CTk):
             lbl.pack(side="left", padx=5, pady=5)
 
         if not records:
-            empty_lbl = ctk.CTkLabel(self.att_scroll, text="No attendance records found for selected filter.", text_color="#64748b")
+            empty_lbl = ctk.CTkLabel(self.att_scroll, text="No attendance records found for selected filter.", text_color=("#64748b", "#94a3b8"))
             empty_lbl.pack(pady=40)
-            self.kpi_lbl.configure(text="Total Present: 0")
             return
 
         # Map student_id -> student_name for fast lookup
         student_name_map = {str(s.get("student_id", "")).strip(): s.get("name", "") for s in self.students}
 
-        present_count = 0
         for r in records:
-            if r.get("status") == "Present":
-                present_count += 1
-            row_frame = ctk.CTkFrame(self.att_scroll, fg_color="#1c1f2b", height=32)
+            row_frame = ctk.CTkFrame(self.att_scroll, fg_color=("#f8fafc", "#1c1f2b"), height=34, corner_radius=6)
             row_frame.pack(fill="x", pady=2)
 
             sid = str(r.get("student_id", "")).strip()
@@ -182,10 +239,19 @@ class AttendanceManagerApp(ctk.CTk):
             ctk.CTkLabel(row_frame, text=sid, width=100, font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5)
             ctk.CTkLabel(row_frame, text=sname, width=180, anchor="w").pack(side="left", padx=5)
             ctk.CTkLabel(row_frame, text=r.get("bus_id", ""), width=100).pack(side="left", padx=5)
-            status_lbl = ctk.CTkLabel(row_frame, text=r.get("status", "Present"), width=90, text_color="#10b981")
-            status_lbl.pack(side="left", padx=5)
 
-        self.kpi_lbl.configure(text=f"Total Present: {present_count}")
+            status_text = r.get("status", "Present")
+            status_badge = ctk.CTkLabel(
+                row_frame,
+                text=status_text,
+                width=80,
+                height=24,
+                corner_radius=12,
+                fg_color=("#dcfce7", "#064e3b") if status_text == "Present" else ("#fef3c7", "#78350f"),
+                text_color=("#15803d", "#34d399") if status_text == "Present" else ("#b45309", "#fbbf24"),
+                font=ctk.CTkFont(size=11, weight="bold")
+            )
+            status_badge.pack(side="left", padx=10)
 
     # =========================================================================
     # TAB 2: STUDENT DIRECTORY & BUS ASSIGNMENT
@@ -764,14 +830,200 @@ class AttendanceManagerApp(ctk.CTk):
         # Update bus options in registration form
         self.reg_bus_menu.configure(values=sorted_buses)
 
+        # Update KPI Cards
+        total_active_students = len([s for s in self.students if s.get("is_active", True)])
+        present_count = len([r for r in self.attendance_records if r.get("status") == "Present"])
+        unmarked_count = max(0, total_active_students - present_count)
+
+        self.kpi_card_total.configure(text=str(total_active_students))
+        self.kpi_card_present.configure(text=str(present_count))
+        self.kpi_card_absent.configure(text=str(unmarked_count))
+        self.kpi_card_buses.configure(text=str(len(sorted_buses)))
+
         self.status_lbl.configure(
-            text=f"Connected to Cloud | Last sync: {time.strftime('%H:%M:%S')}",
+            text=f"● Connected | {time.strftime('%H:%M:%S')}",
             text_color="#10b981"
         )
         self.render_attendance_table(self.attendance_records)
         self.render_students_table()
 
     def apply_attendance_filters(self) -> None:
+        self.refresh_all_data()
+
+    # =========================================================================
+    # TAB 5: CLOUD SETTINGS & CREDENTIALS MANAGEMENT
+    # =========================================================================
+
+    def _build_settings_tab(self) -> None:
+        scroll = ctk.CTkScrollableFrame(self.tab_settings, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=20, pady=15)
+
+        card = ctk.CTkFrame(scroll, fg_color=("#ffffff", "#1c1f2b"), corner_radius=12, border_width=1, border_color=("#e2e8f0", "#2d3748"))
+        card.pack(fill="x", padx=40, pady=10)
+
+        # Title
+        ctk.CTkLabel(
+            card,
+            text="⚙️ Supabase Cloud Database Configuration",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=("#0284c7", "#38bdf8")
+        ).pack(anchor="w", padx=25, pady=(20, 5))
+
+        ctk.CTkLabel(
+            card,
+            text="Manage central cloud connectivity, API keys, and server endpoints. Changes persist locally in .env.",
+            font=ctk.CTkFont(size=12),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(anchor="w", padx=25, pady=(0, 20))
+
+        # Project URL
+        ctk.CTkLabel(card, text="Supabase Project URL:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=25, pady=(5, 2))
+        cur_url, cur_key = self.cloud.get_current_credentials()
+        self.cfg_url_entry = ctk.CTkEntry(card, height=38, placeholder_text="https://your-project.supabase.co")
+        self.cfg_url_entry.insert(0, cur_url)
+        self.cfg_url_entry.pack(fill="x", padx=25, pady=(0, 15))
+
+        # API Key with Show/Hide toggle
+        key_hdr = ctk.CTkFrame(card, fg_color="transparent")
+        key_hdr.pack(fill="x", padx=25, pady=(5, 2))
+        ctk.CTkLabel(key_hdr, text="Supabase API Key (Publishable / Anon / Service):", font=ctk.CTkFont(weight="bold")).pack(side="left")
+
+        self.key_visible = False
+        self.show_hide_btn = ctk.CTkButton(
+            key_hdr,
+            text="👁️ Show Key",
+            width=90,
+            height=26,
+            fg_color=("#e2e8f0", "#334155"),
+            text_color=("#0f172a", "#f8fafc"),
+            hover_color=("#cbd5e1", "#475569"),
+            command=self._toggle_key_visibility
+        )
+        self.show_hide_btn.pack(side="right")
+
+        self.cfg_key_entry = ctk.CTkEntry(card, height=38, show="•", placeholder_text="sb_publishable_...")
+        self.cfg_key_entry.insert(0, cur_key)
+        self.cfg_key_entry.pack(fill="x", padx=25, pady=(0, 15))
+
+        # Connection status feedback box
+        self.cfg_status_box = ctk.CTkLabel(
+            card,
+            text="Status: Connected (Ready)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#10b981"
+        )
+        self.cfg_status_box.pack(anchor="w", padx=25, pady=(0, 15))
+
+        # Action Buttons
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(fill="x", padx=25, pady=(5, 25))
+
+        test_btn = ctk.CTkButton(
+            btn_row,
+            text="🧪 Test Connection",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=40,
+            width=160,
+            command=self.test_cloud_settings
+        )
+        test_btn.pack(side="left", padx=(0, 10))
+
+        save_btn = ctk.CTkButton(
+            btn_row,
+            text="💾 Save & Apply",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color="#10b981",
+            hover_color="#059669",
+            height=40,
+            width=160,
+            command=self.save_cloud_settings
+        )
+        save_btn.pack(side="left", padx=10)
+
+        reset_btn = ctk.CTkButton(
+            btn_row,
+            text="🔄 Restore Defaults",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color="#64748b",
+            hover_color="#475569",
+            height=40,
+            width=160,
+            command=self.restore_default_settings
+        )
+        reset_btn.pack(side="right")
+
+    def _toggle_key_visibility(self) -> None:
+        if self.key_visible:
+            self.cfg_key_entry.configure(show="•")
+            self.show_hide_btn.configure(text="👁️ Show Key")
+            self.key_visible = False
+        else:
+            self.cfg_key_entry.configure(show="")
+            self.show_hide_btn.configure(text="🙈 Hide Key")
+            self.key_visible = True
+
+    def test_cloud_settings(self) -> None:
+        url = self.cfg_url_entry.get().strip().rstrip("/")
+        key = self.cfg_key_entry.get().strip()
+        if not url or not key:
+            messagebox.showwarning("Incomplete", "Please provide both Supabase URL and API Key.")
+            return
+
+        self.cfg_status_box.configure(text="Testing connection...", text_color="#fbbf24")
+
+        def _test():
+            from fleet_system.shared.cloud_client import FleetCloudClient
+            temp_client = FleetCloudClient(url=url, key=key)
+            ok, msg = temp_client.test_connection()
+            if ok:
+                self.after(0, lambda: self.cfg_status_box.configure(text="✅ Connection Successful (200 OK)", text_color="#10b981"))
+                self.after(0, lambda: messagebox.showinfo("Connection OK", "Successfully connected to Supabase cloud!"))
+            else:
+                self.after(0, lambda: self.cfg_status_box.configure(text=f"❌ Connection Failed: {msg[:40]}...", text_color="#ef4444"))
+                self.after(0, lambda: messagebox.showerror("Connection Failed", f"Could not connect to Supabase:\n\n{msg}"))
+
+        threading.Thread(target=_test, daemon=True).start()
+
+    def save_cloud_settings(self) -> None:
+        url = self.cfg_url_entry.get().strip().rstrip("/")
+        key = self.cfg_key_entry.get().strip()
+        if not url or not key:
+            messagebox.showwarning("Incomplete", "Please provide both Supabase URL and API Key.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Confirm Save",
+            f"Are you sure you want to save and switch to this Supabase project?\n\nURL: {url}\n\nThis will reconfigure the application and reload all buses, students, and attendance."
+        )
+        if not confirm:
+            return
+
+        ok = save_cloud_credentials(url, key)
+        self.cloud.reconfigure(url, key)
+        if ok:
+            messagebox.showinfo("Saved", "Cloud credentials saved to .env and applied successfully!")
+        else:
+            messagebox.showwarning("Partial Save", "Credentials applied in memory, but could not write to .env file.")
+
+        self.refresh_all_data()
+
+    def restore_default_settings(self) -> None:
+        confirm = messagebox.askyesno(
+            "Restore Defaults",
+            "Are you sure you want to restore the built-in factory default Supabase credentials?"
+        )
+        if not confirm:
+            return
+
+        url, key = self.cloud.reset_to_defaults()
+        self.cfg_url_entry.delete(0, "end")
+        self.cfg_url_entry.insert(0, url)
+        self.cfg_key_entry.delete(0, "end")
+        self.cfg_key_entry.insert(0, key)
+        self.cfg_status_box.configure(text="Status: Factory Defaults Restored", text_color="#38bdf8")
+        messagebox.showinfo("Restored", "Factory default credentials have been restored!")
         self.refresh_all_data()
 
     def destroy(self) -> None:
