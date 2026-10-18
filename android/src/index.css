@@ -150,7 +150,7 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Top Navigation Bar */
 .top-header {
-  padding: 16px 20px 14px;
+  padding: max(calc(env(safe-area-inset-top, 0px) + 12px), 38px) 20px 14px;
   background: rgba(13, 19, 34, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -161,6 +161,12 @@ h1, h2, h3, h4, h5, h6 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+@media (min-width: 600px) {
+  .top-header {
+    padding: 16px 20px 14px;
+  }
 }
 
 .brand-section {
@@ -617,7 +623,7 @@ h1, h2, h3, h4, h5, h6 {
   transform: translateX(-50%);
   width: 100%;
   max-width: 560px;
-  padding: 10px 14px 16px;
+  padding: 10px 14px max(calc(env(safe-area-inset-bottom, 0px) + 8px), 16px);
   background: rgba(10, 15, 28, 0.94);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
@@ -625,7 +631,7 @@ h1, h2, h3, h4, h5, h6 {
   display: flex;
   align-items: center;
   justify-content: space-around;
-  z-index: 999;
+  z-index: 100;
 }
 
 @media (min-width: 600px) {
@@ -679,10 +685,10 @@ h1, h2, h3, h4, h5, h6 {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  z-index: 100;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 2000;
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -701,16 +707,19 @@ h1, h2, h3, h4, h5, h6 {
   width: 100%;
   max-width: 520px;
   border-radius: 24px 24px 0 0;
-  padding: 22px 20px 30px;
-  max-height: 90vh;
+  padding: 24px 20px max(calc(env(safe-area-inset-bottom, 0px) + 24px), 36px);
+  max-height: 85vh;
   overflow-y: auto;
-  box-shadow: 0 -15px 40px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 -15px 40px rgba(0, 0, 0, 0.85);
   animation: slide-up 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  z-index: 2001;
 }
 
 @media (min-width: 600px) {
   .modal-sheet {
     border-radius: 24px;
+    padding: 24px 24px 28px;
     animation: scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
 }
