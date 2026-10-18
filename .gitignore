@@ -13,3 +13,11 @@ dist/
 .env
 *.env
 backups/
+
+# App Builds & Binaries (Large Files)
+FleetPass_Builds/
+android/dist_electron/
+android/android/
+*.apk
+*.aab
+*.exe
