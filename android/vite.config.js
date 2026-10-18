@@ -9,5 +9,12 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    proxy: {
+      '/api/bridge': {
+        target: 'http://127.0.0.1:5050',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/bridge/, '/api')
+      }
+    }
   },
 })

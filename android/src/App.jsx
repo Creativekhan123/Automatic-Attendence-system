@@ -97,30 +97,42 @@ export default function App() {
 
     // 1. If photo is present, send to Python Biometric Bridge to extract 512-D ArcFace embedding
     if (photo) {
-      try {
-        const host = window.location.hostname || 'localhost';
-        const bridgeUrl = `http://${host}:5050/api/register`;
-        const res = await fetch(bridgeUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            student_id: newStudent.student_id,
-            name: newStudent.name,
-            class_name: newStudent.class_name,
-            bus_id: newStudent.bus_id,
-            photo,
-          }),
-        });
+      const host = window.location.hostname || 'localhost';
+      const endpoints = [
+        '/api/bridge/register', // Same-origin proxy via Vite (works with HTTPS dev server & mobile LAN)
+        'http://localhost:5050/api/register', // Direct localhost (Electron desktop app)
+        `http://${host}:5050/api/register`, // Direct LAN host
+      ];
 
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success) {
+      for (const endpoint of endpoints) {
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              student_id: newStudent.student_id,
+              name: newStudent.name,
+              class_name: newStudent.class_name,
+              bus_id: newStudent.bus_id,
+              photo,
+            }),
+          });
+
+          const data = await res.json().catch(() => null);
+          if (res.ok && data?.success) {
             bridgeSuccess = true;
-            console.log('Biometric Bridge successfully uploaded 512-D ArcFace face profile:', data);
+            console.log(`[FleetPass] 512-D ArcFace Biometrics registered via ${endpoint}:`, data);
+            break;
+          } else if (data?.error && res.status === 400) {
+            // Model validation failure (e.g. no face or multiple faces)
+            throw new Error(`Face Recognition Engine: ${data.error}`);
           }
+        } catch (fetchErr) {
+          if (fetchErr.message && fetchErr.message.includes('Face Recognition Engine:')) {
+            throw fetchErr;
+          }
+          console.warn(`Bridge endpoint ${endpoint} unreachable:`, fetchErr.message);
         }
-      } catch (bridgeErr) {
-        console.warn('Biometric bridge connection note:', bridgeErr);
       }
     }
 
@@ -129,6 +141,12 @@ export default function App() {
       const client = getClient();
       const { error } = await client.from('students').upsert(newStudent);
       if (error) throw error;
+
+      if (photo) {
+        alert(
+          'Warning: Student details saved, but facial biometric embedding could not be generated because Python Biometric Bridge (port 5050) is unreachable.\n\nMake sure "python tools/biometric_bridge.py" is running on your PC so the camera attendance device can recognize this face.'
+        );
+      }
     }
 
     await loadFleetData();
