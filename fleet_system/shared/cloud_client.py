@@ -125,6 +125,12 @@ class FleetCloudClient:
         self.fleet_token = fleet_token or FLEET_SYNC_TOKEN
         self.timeout = timeout
         self.session = requests.Session()
+        from urllib3.util import Retry
+        from requests.adapters import HTTPAdapter
+        retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
+        adapter = HTTPAdapter(max_retries=retries)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self._last_error: Optional[str] = None
 
     def reconfigure(self, url: str, key: str) -> None:
