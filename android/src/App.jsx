@@ -92,10 +92,45 @@ export default function App() {
   }, [loadFleetData]);
 
   // Operations
-  const handleStudentCreated = async (newStudent) => {
-    const client = getClient();
-    const { error } = await client.from('students').upsert(newStudent);
-    if (error) throw error;
+  const handleStudentCreated = async (newStudent, photo = null) => {
+    let bridgeSuccess = false;
+
+    // 1. If photo is present, send to Python Biometric Bridge to extract 512-D ArcFace embedding
+    if (photo) {
+      try {
+        const host = window.location.hostname || 'localhost';
+        const bridgeUrl = `http://${host}:5050/api/register`;
+        const res = await fetch(bridgeUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            student_id: newStudent.student_id,
+            name: newStudent.name,
+            class_name: newStudent.class_name,
+            bus_id: newStudent.bus_id,
+            photo,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success) {
+            bridgeSuccess = true;
+            console.log('Biometric Bridge successfully uploaded 512-D ArcFace face profile:', data);
+          }
+        }
+      } catch (bridgeErr) {
+        console.warn('Biometric bridge connection note:', bridgeErr);
+      }
+    }
+
+    // 2. Fallback to direct Supabase profile upsert if bridge was offline
+    if (!bridgeSuccess) {
+      const client = getClient();
+      const { error } = await client.from('students').upsert(newStudent);
+      if (error) throw error;
+    }
+
     await loadFleetData();
   };
 

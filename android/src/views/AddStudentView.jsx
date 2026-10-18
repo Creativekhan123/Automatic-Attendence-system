@@ -278,13 +278,16 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
 
     setIsSubmitting(true);
     try {
-      await onStudentCreated({
-        student_id: studentId.trim(),
-        name: name.trim(),
-        class_name: className.trim(),
-        bus_id: busId.trim(),
-        is_active: true,
-      });
+      await onStudentCreated(
+        {
+          student_id: studentId.trim(),
+          name: name.trim(),
+          class_name: className.trim(),
+          bus_id: busId.trim(),
+          is_active: true,
+        },
+        photoToSave
+      );
 
       // Confetti celebration
       confetti({
