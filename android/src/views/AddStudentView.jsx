@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, Check, UserPlus, Image as ImageIcon, RotateCcw, AlertCircle, Sparkles, ShieldAlert, CheckCircle2, Scan } from 'lucide-react';
+import { Camera, Check, UserPlus, Image as ImageIcon, RotateCcw, Sparkles, ShieldAlert, CheckCircle2, Scan } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { detectFaces, getFaceDetector } from '../services/faceDetector';
 
@@ -25,17 +25,23 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
   // Camera & Face Detection State
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [capturedPhoto, setCapturedPhoto] = useState(null);
+  const [photoVerified, setPhotoVerified] = useState(false);
   const [cameraError, setCameraError] = useState(null);
-  
+
   // Real-time Face Validation State: 'NO_FACE' | 'READY' | 'MULTIPLE_FACES' | 'IDLE' | 'CHECKING'
   const [faceCheckStatus, setFaceCheckStatus] = useState('IDLE');
   const [faceCheckMessage, setFaceCheckMessage] = useState('Camera inactive');
-  const [detectedBox, setDetectedBox] = useState(null);
+  const [, setDetectedBox] = useState(null);
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const fileInputRef = useRef(null);
   const checkIntervalRef = useRef(null);
+
+  // Pre-load detector on mount for instant zero-delay face checks
+  useEffect(() => {
+    getFaceDetector().catch((err) => console.warn('Preload detector:', err));
+  }, []);
 
   // Continuous real-time face detection loop on active webcam
   const runLiveFaceDetection = useCallback(async () => {
@@ -57,6 +63,24 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
     }
   }, []);
 
+  const stopCamera = useCallback((keepVerifiedStatus = false) => {
+    if (checkIntervalRef.current) {
+      clearInterval(checkIntervalRef.current);
+      checkIntervalRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    setIsCameraActive(false);
+
+    // Only clear status if we are not keeping an already verified photo
+    if (!keepVerifiedStatus && !photoVerified) {
+      setFaceCheckStatus('IDLE');
+      setFaceCheckMessage('Camera inactive');
+    }
+  }, [photoVerified]);
+
   const startCamera = async () => {
     setCameraError(null);
     setFaceCheckStatus('CHECKING');
@@ -64,13 +88,15 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
 
     // 1. Check if navigator.mediaDevices is supported in current context
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      const isHttpNetwork = window.location.protocol !== 'https:' &&
-                            window.location.hostname !== 'localhost' &&
-                            window.location.hostname !== '127.0.0.1';
+      const isHttpNetwork =
+        window.location.protocol !== 'https:' &&
+        window.location.hostname !== 'localhost' &&
+        window.location.hostname !== '127.0.0.1';
       if (isHttpNetwork) {
         setCameraError(
           'Mobile browsers block camera over plain HTTP Wi-Fi. Please open: https://' +
-          window.location.host + ' (accept the security warning) or use "Upload Photo".'
+            window.location.host +
+            ' (accept the security warning) or use "Upload Photo".'
         );
       } else {
         setCameraError(
@@ -99,9 +125,11 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
         console.error('All camera attempts failed:', fallbackErr);
         let errorMsg = 'Camera access blocked.';
         if (fallbackErr.name === 'NotAllowedError' || fallbackErr.name === 'PermissionDeniedError') {
-          errorMsg = 'Camera permission blocked. Click the lock/settings icon near your browser address bar and set Camera to "Allow", then try again.';
+          errorMsg =
+            'Camera permission blocked. Click the lock/settings icon near your browser address bar and set Camera to "Allow", then try again.';
         } else if (fallbackErr.name === 'NotReadableError' || fallbackErr.name === 'TrackStartError') {
-          errorMsg = 'Camera is in use by another program (Zoom, Python script, or another tab). Close other camera apps and retry.';
+          errorMsg =
+            'Camera is in use by another program (Zoom, Python script, or another tab). Close other camera apps and retry.';
         } else if (fallbackErr.name === 'NotFoundError' || fallbackErr.name === 'DevicesNotFoundError') {
           errorMsg = 'No camera hardware found on this computer/device.';
         } else if (fallbackErr.name === 'OverconstrainedError') {
@@ -123,15 +151,10 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
     }
     setIsCameraActive(true);
 
-    // Start periodic face detection check (every 350ms)
+    // Start periodic face detection check (every 300ms)
     if (checkIntervalRef.current) clearInterval(checkIntervalRef.current);
-    checkIntervalRef.current = setInterval(runLiveFaceDetection, 350);
+    checkIntervalRef.current = setInterval(runLiveFaceDetection, 300);
   };
-
-  // Pre-load detector on mount for instant zero-delay face checks
-  useEffect(() => {
-    getFaceDetector().catch((err) => console.warn('Preload detector:', err));
-  }, []);
 
   // Ensure stream is attached to video element as soon as camera becomes active
   useEffect(() => {
@@ -143,25 +166,11 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
     }
   }, [isCameraActive]);
 
-  const stopCamera = () => {
-    if (checkIntervalRef.current) {
-      clearInterval(checkIntervalRef.current);
-      checkIntervalRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    setIsCameraActive(false);
-    setFaceCheckStatus('IDLE');
-    setFaceCheckMessage('Camera inactive');
-  };
-
   useEffect(() => {
     return () => {
-      stopCamera();
+      stopCamera(false);
     };
-  }, []);
+  }, [stopCamera]);
 
   // Capture Photo with Face Validation
   const handleCapture = async () => {
@@ -170,21 +179,22 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
     // Verify face is present before allowing capture!
     const verification = await detectFaces(videoRef.current);
     if (verification.status !== 'READY') {
-      alert(`Cannot Capture: ${verification.message}\nMake sure your face is clearly visible and not covered.`);
+      alert(`Cannot Capture: ${verification.message}\nMake sure student face is clearly visible.`);
       return;
     }
 
     const canvas = document.createElement('canvas');
-    canvas.width = videoRef.current.videoWidth || 480;
+    canvas.width = videoRef.current.videoWidth || 640;
     canvas.height = videoRef.current.videoHeight || 480;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
 
     setCapturedPhoto(dataUrl);
+    setPhotoVerified(true);
     setFaceCheckStatus('READY');
     setFaceCheckMessage('Face successfully captured and verified!');
-    stopCamera();
+    stopCamera(true);
 
     if (navigator.vibrate) navigator.vibrate(35);
   };
@@ -205,15 +215,17 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
         if (result.status !== 'READY') {
           alert(`Face Verification Failed: ${result.message}\nPlease select an image with a clear, single face.`);
           setCapturedPhoto(null);
+          setPhotoVerified(false);
           setFaceCheckStatus('NO_FACE');
           setFaceCheckMessage('Invalid photo: No human face detected.');
           return;
         }
 
         setCapturedPhoto(event.target.result);
+        setPhotoVerified(true);
         setFaceCheckStatus('READY');
         setFaceCheckMessage('Photo verified! 1 face detected.');
-        stopCamera();
+        stopCamera(true);
       };
       img.src = event.target.result;
     };
@@ -222,11 +234,13 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
 
   const handleRetake = () => {
     setCapturedPhoto(null);
-    setFaceCheckStatus('IDLE');
-    setFaceCheckMessage('Camera inactive');
+    setPhotoVerified(false);
+    setFaceCheckStatus('CHECKING');
+    setFaceCheckMessage('Starting camera feed...');
     startCamera();
   };
 
+  // Submit Handler: Works seamlessly whether photo is captured OR live camera has face detected!
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -236,15 +250,29 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
       return;
     }
 
-    // 2. STRICT BIOMETRIC CHECK: Must have captured/uploaded photo!
-    if (!capturedPhoto) {
-      alert('Photo Required: You must capture or upload the student photo before registering.');
-      return;
+    // 2. Check Photo / Live Face
+    let photoToSave = capturedPhoto;
+
+    // If camera is open and live face is detected, auto-capture on submit!
+    if (!photoToSave && isCameraActive && faceCheckStatus === 'READY' && videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth || 640;
+      canvas.height = videoRef.current.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+      photoToSave = canvas.toDataURL('image/jpeg', 0.9);
+      setCapturedPhoto(photoToSave);
+      setPhotoVerified(true);
+      stopCamera(true);
     }
 
-    // 3. STRICT FACE VALIDATION: Must have verified face
-    if (faceCheckStatus !== 'READY') {
-      alert(`Registration Blocked: ${faceCheckMessage}\nA valid face is required to prevent empty biometric records.`);
+    if (!photoToSave) {
+      if (!isCameraActive) {
+        startCamera();
+        alert('Face Photo Required: Camera has been opened. Please position face in frame.');
+      } else {
+        alert('Position your face inside the circle until verified green, then click Save.');
+      }
       return;
     }
 
@@ -274,6 +302,7 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
       // Reset form
       setName('');
       setCapturedPhoto(null);
+      setPhotoVerified(false);
       setFaceCheckStatus('IDLE');
       setFaceCheckMessage('Camera inactive');
       setStudentId(suggestNextId());
@@ -284,9 +313,11 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
     }
   };
 
-  // Status visual colors
-  const isFaceVerified = faceCheckStatus === 'READY';
-  const isFaceMissing = faceCheckStatus === 'NO_FACE' || faceCheckStatus === 'MULTIPLE_FACES';
+  // Registration can proceed if:
+  // 1) A photo has been captured/uploaded and verified, OR
+  // 2) The live camera is actively detecting a verified face right now!
+  const isFaceVerified = Boolean(capturedPhoto && photoVerified) || (isCameraActive && faceCheckStatus === 'READY');
+  const isFaceMissing = isCameraActive && (faceCheckStatus === 'NO_FACE' || faceCheckStatus === 'MULTIPLE_FACES');
 
   return (
     <div>
@@ -321,9 +352,9 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
                 padding: '2px 8px',
                 borderRadius: 999,
                 background: isFaceVerified
-                  ? 'rgba(16,185,129,0.15)'
+                  ? 'rgba(16,185,129,0.18)'
                   : isFaceMissing
-                  ? 'rgba(244,63,94,0.15)'
+                  ? 'rgba(244,63,94,0.18)'
                   : 'rgba(255,255,255,0.06)',
                 color: isFaceVerified
                   ? 'var(--accent-emerald)'
@@ -332,14 +363,14 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
                   : 'var(--text-muted)',
                 border: `1px solid ${
                   isFaceVerified
-                    ? 'rgba(16,185,129,0.3)'
+                    ? 'rgba(16,185,129,0.35)'
                     : isFaceMissing
-                    ? 'rgba(244,63,94,0.3)'
+                    ? 'rgba(244,63,94,0.35)'
                     : 'var(--border-subtle)'
                 }`,
               }}
             >
-              {faceCheckStatus === 'READY'
+              {isFaceVerified
                 ? '✓ Face Verified'
                 : faceCheckStatus === 'NO_FACE'
                 ? '✗ No Face'
@@ -452,28 +483,29 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
                     type="button"
                     className="btn-primary"
                     onClick={handleCapture}
-                    disabled={!isFaceVerified}
+                    disabled={faceCheckStatus !== 'READY'}
                     style={{
                       width: 'auto',
                       padding: '8px 20px',
                       borderRadius: 999,
                       fontSize: '0.84rem',
-                      opacity: isFaceVerified ? 1 : 0.45,
-                      cursor: isFaceVerified ? 'pointer' : 'not-allowed',
-                      background: isFaceVerified
-                        ? 'linear-gradient(135deg, #10b981, #059669)'
-                        : 'rgba(255,255,255,0.1)',
-                      borderColor: isFaceVerified ? 'rgba(16,185,129,0.4)' : 'transparent',
+                      opacity: faceCheckStatus === 'READY' ? 1 : 0.5,
+                      cursor: faceCheckStatus === 'READY' ? 'pointer' : 'not-allowed',
+                      background:
+                        faceCheckStatus === 'READY'
+                          ? 'linear-gradient(135deg, #10b981, #059669)'
+                          : 'rgba(255,255,255,0.1)',
+                      borderColor: faceCheckStatus === 'READY' ? 'rgba(16,185,129,0.4)' : 'transparent',
                     }}
                   >
                     <Camera size={16} />
-                    <span>{isFaceVerified ? 'Capture Verified Face' : 'Show Face to Capture'}</span>
+                    <span>{faceCheckStatus === 'READY' ? 'Capture Verified Face' : 'Show Face to Capture'}</span>
                   </button>
 
                   <button
                     type="button"
                     className="icon-button"
-                    onClick={stopCamera}
+                    onClick={() => stopCamera(false)}
                     title="Cancel Camera"
                     style={{ background: 'rgba(0,0,0,0.6)', borderRadius: 999 }}
                   >
@@ -632,26 +664,57 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
           </div>
         </div>
 
-        {/* Submit Button */}
-        <div style={{ marginTop: 14 }}>
-          <button
-            type="submit"
-            className="btn-primary"
-            disabled={isSubmitting || !isFaceVerified}
-            style={{
-              opacity: isFaceVerified ? 1 : 0.5,
-              cursor: isFaceVerified ? 'pointer' : 'not-allowed',
-            }}
-          >
-            <UserPlus size={18} />
-            <span>
-              {isSubmitting
-                ? 'Registering to Cloud...'
-                : isFaceVerified
-                ? 'Save Verified Student'
-                : 'Verified Photo Required to Register'}
-            </span>
-          </button>
+        {/* Dynamic Action & Submit Button */}
+        <div style={{ marginTop: 16 }}>
+          {!isCameraActive && !capturedPhoto ? (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={startCamera}
+              style={{
+                width: '100%',
+                background: 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+              }}
+            >
+              <Camera size={18} />
+              <span>Open Camera to Verify Face</span>
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="btn-primary"
+              disabled={isSubmitting || !isFaceVerified}
+              style={{
+                width: '100%',
+                opacity: isFaceVerified ? 1 : 0.5,
+                cursor: isFaceVerified ? 'pointer' : 'not-allowed',
+                background: isFaceVerified
+                  ? 'linear-gradient(135deg, #10b981, #059669)'
+                  : 'rgba(255,255,255,0.08)',
+                borderColor: isFaceVerified ? 'rgba(16,185,129,0.45)' : 'var(--border-subtle)',
+                boxShadow: isFaceVerified ? '0 0 20px rgba(16,185,129,0.3)' : 'none',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+              }}
+            >
+              {isFaceVerified ? <Check size={18} /> : <UserPlus size={18} />}
+              <span>
+                {isSubmitting
+                  ? 'Registering to Cloud...'
+                  : capturedPhoto
+                  ? 'Save Verified Student'
+                  : isCameraActive && faceCheckStatus === 'READY'
+                  ? 'Capture & Save Student'
+                  : 'Position Face in Frame to Register'}
+              </span>
+            </button>
+          )}
         </div>
       </form>
     </div>

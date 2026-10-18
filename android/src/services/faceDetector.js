@@ -8,23 +8,45 @@ export async function getFaceDetector() {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
+    const base = import.meta.env.BASE_URL || './';
+    const cleanBase = base.endsWith('/') ? base : `${base}/`;
+
     try {
-      // Load wasm binaries from local public/wasm directory
-      const vision = await FilesetResolver.forVisionTasks('/wasm');
+      let vision;
+      try {
+        vision = await FilesetResolver.forVisionTasks(`${cleanBase}wasm`);
+      } catch (localWasmErr) {
+        console.warn('Local wasm failed, falling back to CDN...', localWasmErr);
+        vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+      }
 
-      detectorInstance = await FaceDetector.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: '/models/blaze_face_short_range.tflite',
-          delegate: 'CPU', // Reliable across all devices including mobile browsers
-        },
-        runningMode: 'IMAGE',
-        minDetectionConfidence: 0.55,
-      });
+      const localModelPath = `${cleanBase}models/blaze_face_short_range.tflite`;
 
-      console.log('MediaPipe FaceDetector initialized locally.');
+      try {
+        detectorInstance = await FaceDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: localModelPath,
+            delegate: 'CPU',
+          },
+          runningMode: 'IMAGE',
+          minDetectionConfidence: 0.5,
+        });
+      } catch (localModelErr) {
+        console.warn('Local model path failed, falling back to hosted model...', localModelErr);
+        detectorInstance = await FaceDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+            delegate: 'CPU',
+          },
+          runningMode: 'IMAGE',
+          minDetectionConfidence: 0.5,
+        });
+      }
+
+      console.log('MediaPipe FaceDetector initialized successfully.');
       return detectorInstance;
     } catch (err) {
-      console.warn('Failed to initialize local MediaPipe FaceDetector:', err);
+      console.warn('Failed to initialize MediaPipe FaceDetector:', err);
       return null;
     }
   })();
