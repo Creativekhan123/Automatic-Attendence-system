@@ -1,11 +1,10 @@
 import React from 'react';
-import { Activity, Users, UserPlus, Bus, FileSpreadsheet } from 'lucide-react';
+import { Activity, Users, Bus, FileSpreadsheet } from 'lucide-react';
 
 export default function BottomNav({ activeTab, onChangeTab }) {
   const tabs = [
     { id: 'live', label: 'Live', icon: Activity },
     { id: 'students', label: 'Students', icon: Users },
-    { id: 'add', label: 'Enroll', icon: UserPlus },
     { id: 'buses', label: 'Fleet', icon: Bus },
     { id: 'reports', label: 'Reports', icon: FileSpreadsheet },
   ];

@@ -9,7 +9,7 @@ export default function StudentDirectoryView({
 }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedBusFilter, setSelectedBusFilter] = useState('ALL');
-  
+
   // Edit Modal State
   const [editingStudent, setEditingStudent] = useState(null);
   const [editName, setEditName] = useState('');
@@ -295,7 +295,7 @@ export default function StudentDirectoryView({
                 Delete Student Profile?
               </h3>
               <p style={{ fontSize: '0.86rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-                Are you sure you want to remove <strong>{studentToDelete.name}</strong> (ID: {studentToDelete.student_id})? 
+                Are you sure you want to remove <strong>{studentToDelete.name}</strong> (ID: {studentToDelete.student_id})?
                 This student will be removed from bus attendance rosters.
               </p>
             </div>

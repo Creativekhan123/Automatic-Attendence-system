@@ -3,7 +3,6 @@ import TopHeader from './components/TopHeader';
 import BottomNav from './components/BottomNav';
 import LiveAttendanceView from './views/LiveAttendanceView';
 import StudentDirectoryView from './views/StudentDirectoryView';
-import AddStudentView from './views/AddStudentView';
 import FleetOverviewView from './views/FleetOverviewView';
 import ReportsView from './views/ReportsView';
 import SettingsModal from './views/SettingsModal';
@@ -190,55 +189,55 @@ export default function App() {
       <main className="main-content">
         <ErrorBoundary>
           {activeTab === 'live' && (
-          <LiveAttendanceView
-            students={students}
-            buses={buses}
-            attendanceRecords={attendanceRecords}
-            selectedBus={selectedBus}
-            onSelectBus={setSelectedBus}
-            selectedDate={selectedDate}
-            onSelectDate={setSelectedDate}
-            onStudentClick={(student, att) => setStudentModal({ student, att })}
-          />
-        )}
+            <LiveAttendanceView
+              students={students}
+              buses={buses}
+              attendanceRecords={attendanceRecords}
+              selectedBus={selectedBus}
+              onSelectBus={setSelectedBus}
+              selectedDate={selectedDate}
+              onSelectDate={setSelectedDate}
+              onStudentClick={(student, att) => setStudentModal({ student, att })}
+            />
+          )}
 
-        {activeTab === 'students' && (
-          <StudentDirectoryView
-            students={students}
-            buses={buses}
-            onUpdateStudent={handleUpdateStudent}
-            onDeleteStudent={handleDeleteStudent}
-          />
-        )}
+          {activeTab === 'students' && (
+            <StudentDirectoryView
+              students={students}
+              buses={buses}
+              onUpdateStudent={handleUpdateStudent}
+              onDeleteStudent={handleDeleteStudent}
+            />
+          )}
 
-        {activeTab === 'add' && (
-          <AddStudentView
-            buses={buses}
-            students={students}
-            onStudentCreated={handleStudentCreated}
-            onSwitchTab={setActiveTab}
-          />
-        )}
+          {activeTab === 'add' && (
+            <AddStudentView
+              buses={buses}
+              students={students}
+              onStudentCreated={handleStudentCreated}
+              onSwitchTab={setActiveTab}
+            />
+          )}
 
-        {activeTab === 'buses' && (
-          <FleetOverviewView
-            buses={buses}
-            students={students}
-            attendanceRecords={attendanceRecords}
-            selectedDate={selectedDate}
-            onAddBus={handleAddBus}
-          />
-        )}
+          {activeTab === 'buses' && (
+            <FleetOverviewView
+              buses={buses}
+              students={students}
+              attendanceRecords={attendanceRecords}
+              selectedDate={selectedDate}
+              onAddBus={handleAddBus}
+            />
+          )}
 
-        {activeTab === 'reports' && (
-          <ReportsView
-            students={students}
-            buses={buses}
-            attendanceRecords={attendanceRecords}
-            selectedDate={selectedDate}
-            selectedBus={selectedBus}
-          />
-        )}
+          {activeTab === 'reports' && (
+            <ReportsView
+              students={students}
+              buses={buses}
+              attendanceRecords={attendanceRecords}
+              selectedDate={selectedDate}
+              selectedBus={selectedBus}
+            />
+          )}
         </ErrorBoundary>
       </main>
 
