@@ -17,6 +17,7 @@ backups/
 # App Builds & Binaries (Large Files)
 FleetPass_Builds/
 android/dist_electron/
+android/dist_app/
 android/android/
 *.apk
 *.aab

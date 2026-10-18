@@ -14,7 +14,7 @@
     "appId": "com.fleetpass.app",
     "productName": "FleetPass",
     "directories": {
-      "output": "dist_electron"
+      "output": "dist_app"
     },
     "files": [
       "dist/**/*",

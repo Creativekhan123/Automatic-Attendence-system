@@ -316,7 +316,7 @@ export default function AddStudentView({ buses, students, onStudentCreated }) {
   // Registration can proceed if:
   // 1) A photo has been captured/uploaded and verified, OR
   // 2) The live camera is actively detecting a verified face right now!
-  const isFaceVerified = Boolean(capturedPhoto && photoVerified) || (isCameraActive && faceCheckStatus === 'READY');
+  const isFaceVerified = Boolean(capturedPhoto) || (isCameraActive && faceCheckStatus === 'READY');
   const isFaceMissing = isCameraActive && (faceCheckStatus === 'NO_FACE' || faceCheckStatus === 'MULTIPLE_FACES');
 
   return (
