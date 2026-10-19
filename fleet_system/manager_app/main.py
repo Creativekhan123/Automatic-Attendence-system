@@ -1635,11 +1635,12 @@ class AttendanceManagerApp(ctk.CTk):
 
     def export_single_student_csv(self, student_id: str, student_name: Optional[str] = None) -> None:
         """Fetch full attendance history for a single student and export as parent-ready CSV."""
-        sid_str = str(student_id).strip()
+        sid_str = student_id.strip()
         student = next((s for s in self.students if str(s.get("student_id", "")).strip() == sid_str), None)
-        sname = student.get("name") if student else (student_name or f"Student {sid_str}")
-        class_name = student.get("class_name", "--") if student else "--"
-        assigned_bus = student.get("bus_id", "--") if student else "--"
+        sname_raw = student.get("name") if student else student_name
+        sname: str = str(sname_raw).strip() if (sname_raw is not None and str(sname_raw).strip()) else f"Student {sid_str}"
+        class_name: str = str(student.get("class_name", "--")) if student else "--"
+        assigned_bus: str = str(student.get("bus_id", "--")) if student else "--"
 
         self.status_lbl.configure(text=f"Fetching history for {sname}...", text_color="#fbbf24")
 
