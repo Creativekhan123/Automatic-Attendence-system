@@ -843,20 +843,21 @@ class AttendanceManagerApp(ctk.CTk):
             boarded_badge.pack(side="left", padx=5)
 
             # Status Badge
+            is_active_bus = binfo.get("is_active", True)
             status_badge = ctk.CTkLabel(
                 row,
-                text="Active",
+                text="Active" if is_active_bus else "Archived",
                 width=80,
                 height=22,
                 corner_radius=11,
-                fg_color=("#dcfce7", "#064e3b"),
-                text_color=("#15803d", "#34d399"),
+                fg_color=("#dcfce7", "#064e3b") if is_active_bus else ("#fee2e2", "#7f1d1d"),
+                text_color=("#15803d", "#34d399") if is_active_bus else ("#dc2626", "#f87171"),
                 font=ctk.CTkFont(size=11, weight="bold")
             )
             status_badge.pack(side="left", padx=5)
 
             # Action Buttons container
-            act_frame = ctk.CTkFrame(row, fg_color="transparent", width=210)
+            act_frame = ctk.CTkFrame(row, fg_color="transparent", width=220)
             act_frame.pack(side="left", padx=5)
 
             # View Roster Button
@@ -877,7 +878,7 @@ class AttendanceManagerApp(ctk.CTk):
             edit_btn = ctk.CTkButton(
                 act_frame,
                 text="✏️ Edit",
-                width=60,
+                width=55,
                 height=28,
                 fg_color=("#e2e8f0", "#334155"),
                 text_color=("#0f172a", "#f8fafc"),
@@ -887,18 +888,32 @@ class AttendanceManagerApp(ctk.CTk):
             )
             edit_btn.pack(side="left", padx=2)
 
-            # Delete Bus Button
-            del_btn = ctk.CTkButton(
-                act_frame,
-                text="🗑️",
-                width=36,
-                height=28,
-                fg_color="#ef4444",
-                hover_color="#dc2626",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                command=lambda b=bid, a=assigned: self.delete_bus_permanently(b, a)
-            )
-            del_btn.pack(side="left", padx=2)
+            if is_active_bus:
+                # Delete / Archive Bus Button
+                del_btn = ctk.CTkButton(
+                    act_frame,
+                    text="🗑️",
+                    width=36,
+                    height=28,
+                    fg_color="#ef4444",
+                    hover_color="#dc2626",
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    command=lambda b=bid, a=assigned: self.delete_bus_permanently(b, a)
+                )
+                del_btn.pack(side="left", padx=2)
+            else:
+                # Reactivate Bus Button
+                reactivate_btn = ctk.CTkButton(
+                    act_frame,
+                    text="↺",
+                    width=36,
+                    height=28,
+                    fg_color=("#10b981", "#059669"),
+                    hover_color=("#059669", "#047857"),
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    command=lambda b=bid: self._activate_bus_async(b)
+                )
+                reactivate_btn.pack(side="left", padx=2)
 
     def view_bus_roster(self, bus_id: str) -> None:
         """Switch to Student Directory filtered to this bus."""
@@ -927,29 +942,112 @@ class AttendanceManagerApp(ctk.CTk):
             threading.Thread(target=_async_edit, daemon=True).start()
 
     def delete_bus_permanently(self, bus_id: str, assigned_count: int) -> None:
-        """Permanently delete or deactivate a bus from Supabase cloud after confirmation."""
-        warning_msg = f"Are you sure you want to remove bus '{bus_id}' from the fleet?"
+        """Permanently delete a bus from Supabase cloud after confirmation."""
         if assigned_count > 0:
-            warning_msg += (
-                f"\n\n⚠️ NOTE: There are {assigned_count} student(s) currently assigned to this bus.\n"
-                "If historical attendance records exist, the bus will be safely deactivated (archived) "
-                "to preserve attendance history without data loss."
+            choice = messagebox.askyesno(
+                "Students Assigned to Bus",
+                f"⚠️ Bus '{bus_id}' has {assigned_count} students currently assigned to it!\n\n"
+                f"In the database, deleting a bus with assigned students is blocked to protect student enrollments.\n\n"
+                f"Would you like to ARCHIVE (Deactivate) this bus instead?\n"
+                f"(Archiving will remove the bus from active fleet operations while keeping student profiles safe. "
+                f"Or click 'No' if you prefer to first reassign the students in Student Directory.)",
+                parent=self
             )
+            if choice:
+                self._deactivate_bus_async(bus_id)
+            return
 
-        confirm = messagebox.askyesno("Confirm Bus Removal", warning_msg, parent=self)
+        warning_msg = (
+            f"Are you sure you want to permanently delete bus '{bus_id}' from the cloud database?\n\n"
+            f"This cannot be undone."
+        )
+        confirm = messagebox.askyesno("Confirm Bus Deletion", warning_msg, parent=self)
         if not confirm:
             return
 
-        self.status_lbl.configure(text=f"Removing bus {bus_id} from Supabase...", text_color="#fbbf24")
+        self.status_lbl.configure(text=f"Deleting bus {bus_id} from Supabase...", text_color="#fbbf24")
         def _async_del():
             ok = self.cloud.delete_bus(bus_id)
             if ok:
-                self.after(0, lambda: messagebox.showinfo("Bus Removed", f"Bus '{bus_id}' was successfully removed from the active fleet."))
+                self.after(0, lambda: messagebox.showinfo("Deleted", f"Bus '{bus_id}' was permanently deleted from Supabase."))
+                self.refresh_all_data()
+                return
+
+            err = self.cloud._last_error or "Unknown error"
+
+            # 1. Foreign key constraint violation (historical attendance records exist)
+            if "23503" in err or "violates foreign key constraint" in err.lower() or "is still referenced" in err.lower():
+                def _handle_fk():
+                    arch = messagebox.askyesno(
+                        "Historical Attendance Found",
+                        f"Bus '{bus_id}' cannot be permanently deleted because historical attendance records are linked to it in the cloud database.\n\n"
+                        f"Deleting it would permanently corrupt student attendance records.\n\n"
+                        f"Would you like to ARCHIVE (Deactivate) this bus instead?\n"
+                        f"(It will be archived from active fleet lists but will preserve historical records.)",
+                        parent=self
+                    )
+                    if arch:
+                        self._deactivate_bus_async(bus_id)
+                self.after(0, _handle_fk)
+                return
+
+            # 2. RLS or permission denied (anon lacks DELETE privilege in Supabase)
+            if "42501" in err or "permission denied" in err.lower():
+                def _handle_perm():
+                    messagebox.showerror(
+                        "Supabase Permission Required",
+                        f"Failed to delete bus '{bus_id}': Supabase permission denied (PostgreSQL 42501).\n\n"
+                        f"By default, Supabase security rules prevent API users from deleting buses.\n\n"
+                        f"To enable deleting unused buses, please execute Migration 005 in your Supabase Dashboard SQL Editor:\n"
+                        f"supabase/migrations/005_fix_bus_deletion_and_policies.sql\n\n"
+                        f"Or run the following SQL command in Supabase:\n"
+                        f"GRANT DELETE ON public.buses TO anon, authenticated;\n"
+                        f"CREATE POLICY \"Allow delete buses\" ON public.buses FOR DELETE TO anon, authenticated USING (true);\n\n"
+                        f"Exact error from Supabase:\n{err}",
+                        parent=self
+                    )
+                self.after(0, _handle_perm)
+                return
+
+            # 3. Generic cloud error
+            self.after(0, lambda: messagebox.showerror("Cloud Error", f"Failed to delete bus '{bus_id}':\n\n{err}"))
+
+        threading.Thread(target=_async_del, daemon=True).start()
+
+    def _deactivate_bus_async(self, bus_id: str) -> None:
+        """Deactivate/archive a bus in Supabase."""
+        self.status_lbl.configure(text=f"Archiving bus {bus_id}...", text_color="#fbbf24")
+        def _task():
+            ok = self.cloud.update_bus_status(bus_id, is_active=False)
+            if ok:
+                self.after(0, lambda: messagebox.showinfo("Bus Archived", f"Bus '{bus_id}' has been deactivated and archived."))
                 self.refresh_all_data()
             else:
-                err = self.cloud.get_last_error() or "Unknown error"
-                self.after(0, lambda: messagebox.showerror("Cloud Deletion Error", f"Failed to delete bus '{bus_id}':\n\n{err}"))
-        threading.Thread(target=_async_del, daemon=True).start()
+                err = self.cloud._last_error or "Unknown error"
+                if "42501" in err or "row-level security" in err.lower():
+                    self.after(0, lambda: messagebox.showerror(
+                        "Supabase Permission Required",
+                        f"Failed to archive bus '{bus_id}': Supabase RLS policy restricted updating status.\n\n"
+                        f"Please run Migration 005 in your Supabase SQL Editor to enable status updates:\n"
+                        f"supabase/migrations/005_fix_bus_deletion_and_policies.sql\n\n"
+                        f"Error details:\n{err}"
+                    ))
+                else:
+                    self.after(0, lambda: messagebox.showerror("Archive Failed", f"Failed to archive bus '{bus_id}':\n\n{err}"))
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _activate_bus_async(self, bus_id: str) -> None:
+        """Reactivate an archived bus in Supabase."""
+        self.status_lbl.configure(text=f"Activating bus {bus_id}...", text_color="#fbbf24")
+        def _task():
+            ok = self.cloud.update_bus_status(bus_id, is_active=True)
+            if ok:
+                self.after(0, lambda: messagebox.showinfo("Bus Activated", f"Bus '{bus_id}' is now active!"))
+                self.refresh_all_data()
+            else:
+                err = self.cloud._last_error or "Unknown error"
+                self.after(0, lambda: messagebox.showerror("Activation Failed", f"Failed to activate bus '{bus_id}':\n\n{err}"))
+        threading.Thread(target=_task, daemon=True).start()
 
     # =========================================================================
     # TAB 2: STUDENT DIRECTORY & BUS ASSIGNMENT
@@ -1819,7 +1917,7 @@ class AttendanceManagerApp(ctk.CTk):
         threading.Thread(target=self._async_fetch_all, args=(date_val, bus_val), daemon=True).start()
 
     def _async_fetch_all(self, date_val: str, bus_val: Optional[str]) -> None:
-        buses = self.cloud.get_buses()
+        buses = self.cloud.get_buses(active_only=False)
         students = self.cloud.get_students(active_only=False)
         records = self.cloud.get_attendance(date_str=date_val, bus_id=bus_val)
 
@@ -1852,8 +1950,9 @@ class AttendanceManagerApp(ctk.CTk):
         self.bus_combo.configure(values=bus_names)
         self.stu_bus_combo.configure(values=bus_names)
 
-        # Update bus options in registration form
-        self.reg_bus_menu.configure(values=sorted_buses)
+        # Update bus options in registration form (only active buses for new student enrollment)
+        active_buses = sorted([str(b["bus_id"]).strip() for b in self.buses if b.get("is_active", True) and b.get("bus_id")])
+        self.reg_bus_menu.configure(values=active_buses or sorted_buses)
 
         # Update KPI Cards
         total_active_students = len([s for s in self.students if s.get("is_active", True)])
