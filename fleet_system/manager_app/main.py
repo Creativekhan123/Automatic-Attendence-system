@@ -1251,9 +1251,25 @@ class AttendanceManagerApp(ctk.CTk):
 
     def _on_delete_completed(self, student_id: str, ok_cloud: bool) -> None:
         if ok_cloud:
-            messagebox.showinfo("Deleted", f"Student {student_id} was successfully deleted from Database & Supabase.")
+            messagebox.showinfo("Deleted", f"Student '{student_id}' was permanently deleted from Local Database & Supabase cloud.")
         else:
-            messagebox.showwarning("Notice", f"Student {student_id} was deleted locally, but cloud reported: {self.cloud._last_error}")
+            err = self.cloud._last_error or "Unknown error"
+            if "42501" in err or "permission denied" in err.lower():
+                messagebox.showerror(
+                    "Supabase Permission Required",
+                    f"Student '{student_id}' was deleted locally, but could not be permanently deleted from Supabase cloud: Permission denied (PostgreSQL 42501).\n\n"
+                    f"To enable permanent student deletion in Supabase, execute Migration 006 in your Supabase Dashboard SQL Editor:\n"
+                    f"supabase/migrations/006_fix_student_deletion_and_policies.sql\n\n"
+                    f"Or run the following SQL in Supabase:\n"
+                    f"GRANT DELETE ON public.students, public.student_biometrics, public.attendance TO anon, authenticated;\n"
+                    f"CREATE POLICY \"Allow delete students\" ON public.students FOR DELETE TO anon, authenticated USING (true);\n\n"
+                    f"Exact error:\n{err}"
+                )
+            else:
+                messagebox.showwarning(
+                    "Cloud Warning",
+                    f"Student '{student_id}' was deleted locally, but cloud reported:\n\n{err}"
+                )
         self.refresh_all_data()
 
     # =========================================================================

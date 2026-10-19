@@ -456,42 +456,64 @@ class FleetCloudClient:
             return False
 
     def delete_student(self, student_id: str) -> bool:
-        """Permanently remove student: deletes biometric vector and marks inactive/purged."""
+        """Permanently delete student profile, biometrics, and associated records from cloud."""
         if not self.is_configured() or not student_id:
+            self._last_error = "Cloud client is not configured or student_id is empty."
             return False
         clean_id = student_id.strip()
+
+        # Step 1: Try smart RPC if installed in Supabase
         try:
-            # 1. Purge biometrics in student_biometrics (zero-out or delete)
-            import numpy as np
-            zero_bytes = np.zeros(512, dtype=np.float32).tobytes()
-            self.session.post(
-                f"{self.url}/rest/v1/student_biometrics",
-                headers=self._get_headers(with_token=True, prefer="resolution=merge-duplicates"),
-                json={
-                    "student_id": clean_id,
-                    "embedding": "\\x" + zero_bytes.hex(),
-                    "dimension": 512,
-                    "model_name": "deleted"
-                },
+            rpc_resp = self.session.post(
+                f"{self.url}/rest/v1/rpc/delete_student_permanently",
+                headers=self._get_headers(),
+                json={"target_student_id": clean_id},
                 timeout=self.timeout
             )
-            # 2. Try hard delete on student row
+            if rpc_resp.status_code == 200:
+                result = rpc_resp.json()
+                if isinstance(result, dict):
+                    if result.get("success"):
+                        self._last_error = None
+                        return True
+                    else:
+                        self._last_error = result.get("message", "RPC student deletion failed.")
+                        return False
+        except Exception as e:
+            logger.debug(f"RPC delete_student_permanently not available: {e}")
+
+        # Step 2: Direct REST fallback
+        try:
+            # Delete biometric vector row first
+            try:
+                self.session.delete(
+                    f"{self.url}/rest/v1/student_biometrics?student_id=eq.{clean_id}",
+                    headers=self._get_headers(with_token=True, prefer="return=minimal"),
+                    timeout=self.timeout
+                )
+            except Exception:
+                pass
+
+            # Delete student profile row
             del_resp = self.session.delete(
                 f"{self.url}/rest/v1/students?student_id=eq.{clean_id}",
                 headers=self._get_headers(prefer="return=minimal"),
                 timeout=self.timeout
             )
             if del_resp.status_code in (200, 204):
+                self._last_error = None
                 return True
 
-            # If hard delete is blocked by RLS/FK, mark is_active=false
-            patch_resp = self.session.patch(
-                f"{self.url}/rest/v1/students?student_id=eq.{clean_id}",
-                headers=self._get_headers(prefer="return=minimal"),
-                json={"is_active": False},
-                timeout=self.timeout
-            )
-            return patch_resp.status_code in (200, 204)
+            err_msg = ""
+            try:
+                ej = del_resp.json()
+                err_msg = ej.get("message") or ej.get("details") or del_resp.text
+            except Exception:
+                err_msg = del_resp.text
+
+            self._last_error = f"HTTP {del_resp.status_code}: {err_msg}"
+            logger.error(f"Failed to delete student {clean_id}: {self._last_error}")
+            return False
         except Exception as e:
             logger.error(f"Error deleting student {clean_id}: {e}")
             self._last_error = str(e)
