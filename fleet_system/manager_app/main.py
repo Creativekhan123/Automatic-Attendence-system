@@ -20,6 +20,9 @@ from tkinter import messagebox, filedialog, simpledialog
 from PIL import Image
 import cv2
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Ensure root path
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1029,7 +1032,7 @@ class AttendanceManagerApp(ctk.CTk):
         # Table Header
         hdr = ctk.CTkFrame(self.students_scroll, fg_color=("#e2e8f0", "#242938"), height=35, corner_radius=6)
         hdr.pack(fill="x", pady=2)
-        cols = [("ID", 80), ("Full Name", 190), ("Class", 90), ("Assigned Bus", 150), ("Status", 90), ("Actions", 130)]
+        cols = [("ID", 75), ("Full Name", 185), ("Class", 85), ("Assigned Bus", 140), ("Status", 80), ("Actions", 210)]
         for cname, w in cols:
             ctk.CTkLabel(hdr, text=cname, width=w, font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5, pady=5)
 
@@ -1048,9 +1051,9 @@ class AttendanceManagerApp(ctk.CTk):
             row = ctk.CTkFrame(self.students_scroll, fg_color=("#f8fafc", "#1c1f2b"), height=38, corner_radius=6)
             row.pack(fill="x", pady=2)
 
-            ctk.CTkLabel(row, text=sid, width=80, font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5)
-            ctk.CTkLabel(row, text=sname, width=190, anchor="w").pack(side="left", padx=5)
-            ctk.CTkLabel(row, text=str(s.get("class_name", "--")), width=90).pack(side="left", padx=5)
+            ctk.CTkLabel(row, text=sid, width=75, font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5)
+            ctk.CTkLabel(row, text=sname, width=185, anchor="w").pack(side="left", padx=5)
+            ctk.CTkLabel(row, text=str(s.get("class_name", "--")), width=85).pack(side="left", padx=5)
 
             # Bus Reassign Dropdown directly inline
             bus_var = ctk.StringVar(value=cur_bus)
@@ -1058,24 +1061,42 @@ class AttendanceManagerApp(ctk.CTk):
                 row,
                 variable=bus_var,
                 values=[b["bus_id"] for b in self.buses] or [cur_bus],
-                width=150,
+                width=140,
                 command=lambda new_b, stu_id=sid: self.reassign_bus(stu_id, new_b)
             )
             bus_menu.pack(side="left", padx=5)
 
-            ctk.CTkLabel(row, text="Active", width=90, text_color="#10b981").pack(side="left", padx=5)
+            ctk.CTkLabel(row, text="Active", width=80, text_color="#10b981").pack(side="left", padx=5)
+
+            # Action Buttons container (CSV Export + Delete)
+            act_frame = ctk.CTkFrame(row, fg_color="transparent", width=210)
+            act_frame.pack(side="left", padx=5)
+
+            csv_btn = ctk.CTkButton(
+                act_frame,
+                text="📄 CSV",
+                width=85,
+                height=28,
+                fg_color=("#e0f2fe", "#1e293b"),
+                text_color=("#0284c7", "#38bdf8"),
+                hover_color=("#bae6fd", "#334155"),
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda stu_id=sid, stu_name=sname: self.export_single_student_csv(stu_id, stu_name)
+            )
+            csv_btn.pack(side="left", padx=(0, 6))
 
             # Permanent DELETE Button
             del_btn = ctk.CTkButton(
-                row,
+                act_frame,
                 text="🗑️ Delete",
-                width=110,
+                width=85,
+                height=28,
                 fg_color="#b91c1c",
                 hover_color="#991b1b",
-                font=ctk.CTkFont(weight="bold"),
+                font=ctk.CTkFont(size=11, weight="bold"),
                 command=lambda stu_id=sid, stu_name=sname: self.delete_student_permanently(stu_id, stu_name)
             )
-            del_btn.pack(side="left", padx=5)
+            del_btn.pack(side="left")
 
     def reassign_bus(self, student_id: str, new_bus_id: str) -> None:
         """Update student bus assignment in cloud."""
@@ -1432,32 +1453,320 @@ class AttendanceManagerApp(ctk.CTk):
     # =========================================================================
 
     def _build_reports_tab(self) -> None:
-        frame = ctk.CTkFrame(self.tab_reports, fg_color=("#ffffff", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#2d3748"))
-        frame.pack(fill="both", expand=True, padx=20, pady=20)
+        """Single-window modern Reports & Export center with individual student & fleet reports."""
+        scroll = ctk.CTkScrollableFrame(self.tab_reports, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=14, pady=10)
+
+        # ---------------------------------------------------------------------
+        # CARD 1: INDIVIDUAL STUDENT ATTENDANCE REPORT (PARENT COPY)
+        # ---------------------------------------------------------------------
+        stu_card = ctk.CTkFrame(
+            scroll,
+            fg_color=("#ffffff", "#161822"),
+            corner_radius=12,
+            border_width=1,
+            border_color=("#e2e8f0", "#2d3748")
+        )
+        stu_card.pack(fill="x", padx=10, pady=(4, 14))
+
+        # Title Row
+        title_frame = ctk.CTkFrame(stu_card, fg_color="transparent")
+        title_frame.pack(fill="x", padx=24, pady=(20, 8))
 
         ctk.CTkLabel(
-            frame,
-            text="Export Attendance Logs to CSV",
-            font=ctk.CTkFont(size=18, weight="bold")
-        ).pack(pady=(30, 10))
+            title_frame,
+            text="🎓 Individual Student Attendance Report (Parent Copy)",
+            font=ctk.CTkFont(size=17, weight="bold"),
+            text_color=("#0284c7", "#38bdf8")
+        ).pack(anchor="w")
 
         ctk.CTkLabel(
-            frame,
-            text="Exports filtered cloud attendance data to an official Excel/CSV report.",
-            text_color="#94a3b8"
-        ).pack(pady=5)
+            title_frame,
+            text="Export an official date-by-date check-in history for any student showing which bus, date, and exact time they boarded.",
+            font=ctk.CTkFont(size=12),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(anchor="w", pady=(2, 0))
 
-        export_btn = ctk.CTkButton(
-            frame,
-            text="💾 Download CSV Report",
-            font=ctk.CTkFont(size=15, weight="bold"),
+        # Student Selection & Preview Box
+        sel_box = ctk.CTkFrame(stu_card, fg_color=("#f8fafc", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#262b3d"))
+        sel_box.pack(fill="x", padx=24, pady=(8, 16))
+
+        sel_top = ctk.CTkFrame(sel_box, fg_color="transparent")
+        sel_top.pack(fill="x", padx=16, pady=(14, 10))
+
+        ctk.CTkLabel(
+            sel_top,
+            text="Choose Student:",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=("#0f172a", "#f8fafc")
+        ).pack(side="left", padx=(0, 10))
+
+        self.rep_student_var = ctk.StringVar(value="Select Student...")
+        self.rep_student_combo = ctk.CTkComboBox(
+            sel_top,
+            variable=self.rep_student_var,
+            values=["Loading students..."],
+            width=360,
+            height=34,
+            command=self._on_rep_student_selected
+        )
+        self.rep_student_combo.pack(side="left", padx=5)
+
+        # Quick Preview details labels
+        self.rep_preview_frame = ctk.CTkFrame(sel_box, fg_color="transparent")
+        self.rep_preview_frame.pack(fill="x", padx=16, pady=(0, 14))
+
+        self.rep_preview_details = ctk.CTkLabel(
+            self.rep_preview_frame,
+            text="Please select a student above to preview boarding records.",
+            font=ctk.CTkFont(size=12),
+            text_color=("#64748b", "#94a3b8")
+        )
+        self.rep_preview_details.pack(anchor="w")
+
+        # Action Button Row for Card 1
+        btn_frame1 = ctk.CTkFrame(stu_card, fg_color="transparent")
+        btn_frame1.pack(fill="x", padx=24, pady=(0, 20))
+
+        export_stu_btn = ctk.CTkButton(
+            btn_frame1,
+            text="📄 Export Student Report (CSV)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=40,
+            width=240,
+            command=self._on_export_selected_student_click
+        )
+        export_stu_btn.pack(side="left")
+
+        # ---------------------------------------------------------------------
+        # CARD 2: FLEET MASTER ATTENDANCE REPORT (BULK EXPORT)
+        # ---------------------------------------------------------------------
+        fleet_card = ctk.CTkFrame(
+            scroll,
+            fg_color=("#ffffff", "#161822"),
+            corner_radius=12,
+            border_width=1,
+            border_color=("#e2e8f0", "#2d3748")
+        )
+        fleet_card.pack(fill="x", padx=10, pady=(4, 14))
+
+        fleet_title = ctk.CTkFrame(fleet_card, fg_color="transparent")
+        fleet_title.pack(fill="x", padx=24, pady=(20, 8))
+
+        ctk.CTkLabel(
+            fleet_title,
+            text="📊 Fleet Master Attendance Report (All Buses)",
+            font=ctk.CTkFont(size=17, weight="bold"),
+            text_color=("#10b981", "#34d399")
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            fleet_title,
+            text="Download complete fleet attendance logs across all school buses or filtered by the current date and bus view.",
+            font=ctk.CTkFont(size=12),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Fleet Status Box
+        fleet_info_box = ctk.CTkFrame(fleet_card, fg_color=("#f8fafc", "#1c1f2b"), corner_radius=10, border_width=1, border_color=("#e2e8f0", "#262b3d"))
+        fleet_info_box.pack(fill="x", padx=24, pady=(8, 16))
+
+        self.fleet_rep_status_lbl = ctk.CTkLabel(
+            fleet_info_box,
+            text="Active Filter: All Buses | Date: Today | Records Available: 0",
+            font=ctk.CTkFont(size=12),
+            text_color=("#64748b", "#94a3b8")
+        )
+        self.fleet_rep_status_lbl.pack(anchor="w", padx=16, pady=14)
+
+        # Action Button Row for Card 2
+        btn_frame2 = ctk.CTkFrame(fleet_card, fg_color="transparent")
+        btn_frame2.pack(fill="x", padx=24, pady=(0, 20))
+
+        export_fleet_btn = ctk.CTkButton(
+            btn_frame2,
+            text="💾 Download Fleet CSV Report",
+            font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#10b981",
             hover_color="#059669",
-            height=45,
-            width=220,
+            height=40,
+            width=240,
             command=self.export_csv
         )
-        export_btn.pack(pady=30)
+        export_fleet_btn.pack(side="left")
+
+    def _on_rep_student_selected(self, selected_str: str) -> None:
+        """Update live preview when a student is selected in the Reports dropdown."""
+        if not selected_str or " - " not in selected_str:
+            return
+        sid = selected_str.split(" - ")[0].strip()
+        student = next((s for s in self.students if str(s.get("student_id", "")).strip() == sid), None)
+        if not student:
+            return
+
+        name = student.get("name", "--")
+        cname = student.get("class_name", "--")
+        bus = student.get("bus_id", "--")
+
+        records_count = len([r for r in self.attendance_records if str(r.get("student_id", "")).strip() == sid])
+
+        preview_text = (
+            f"👤 Student: {name} (ID: {sid})   |   "
+            f"🏫 Class: {cname}   |   "
+            f"🚌 Assigned Bus: {bus}   |   "
+            f"📅 Today's Records: {records_count}"
+        )
+        if hasattr(self, "rep_preview_details"):
+            self.rep_preview_details.configure(
+                text=preview_text,
+                text_color=("#0f172a", "#f8fafc")
+            )
+
+    def _on_export_selected_student_click(self) -> None:
+        selected_str = self.rep_student_var.get().strip() if hasattr(self, "rep_student_var") else ""
+        if not selected_str or " - " not in selected_str or selected_str == "Select Student...":
+            messagebox.showwarning("Select Student", "Please choose a student from the dropdown to export their attendance report.")
+            return
+        sid = selected_str.split(" - ")[0].strip()
+        sname = selected_str.split(" - ")[1].split(" (")[0].strip()
+        self.export_single_student_csv(sid, sname)
+
+    def export_single_student_csv(self, student_id: str, student_name: Optional[str] = None) -> None:
+        """Fetch full attendance history for a single student and export as parent-ready CSV."""
+        sid_str = str(student_id).strip()
+        student = next((s for s in self.students if str(s.get("student_id", "")).strip() == sid_str), None)
+        sname = student.get("name") if student else (student_name or f"Student {sid_str}")
+        class_name = student.get("class_name", "--") if student else "--"
+        assigned_bus = student.get("bus_id", "--") if student else "--"
+
+        self.status_lbl.configure(text=f"Fetching history for {sname}...", text_color="#fbbf24")
+
+        def _async_fetch():
+            records = []
+            try:
+                # Query cloud database for all attendance records for this student
+                cloud_records = self.cloud.get_attendance(student_id=sid_str, limit=2000)
+                if cloud_records:
+                    records = cloud_records
+            except Exception as e:
+                logger.error(f"Error fetching attendance for {sid_str}: {e}")
+
+            # Merge with any local attendance records if needed (deduplicating by event_id)
+            local_seen = {r.get("event_id") for r in records if r.get("event_id")}
+            for r in self.attendance_records:
+                if str(r.get("student_id", "")).strip() == sid_str:
+                    eid = r.get("event_id")
+                    if not eid or eid not in local_seen:
+                        records.append(r)
+                        if eid:
+                            local_seen.add(eid)
+
+            # Sort descending by date and time
+            records.sort(
+                key=lambda r: (r.get("attendance_date", ""), r.get("attendance_time", "")),
+                reverse=True
+            )
+
+            self.after(0, lambda: self._prompt_save_student_csv(sid_str, sname, class_name, assigned_bus, records))
+
+        threading.Thread(target=_async_fetch, daemon=True).start()
+
+    def _prompt_save_student_csv(
+        self,
+        student_id: str,
+        student_name: str,
+        class_name: str,
+        assigned_bus: str,
+        records: List[Dict[str, Any]]
+    ) -> None:
+        self.status_lbl.configure(text="Ready", text_color="#10b981")
+
+        if not records:
+            messagebox.showinfo(
+                "No Attendance Records",
+                f"No boarding attendance records found for student:\n\n{student_name} (ID: {student_id})\n\nThis student has not yet boarded any school bus."
+            )
+            return
+
+        clean_name = "".join(c for c in student_name if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
+        default_file = f"attendance_report_{student_id}_{clean_name}_{datetime.now().strftime('%Y%m%d')}.csv"
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+            initialfile=default_file,
+            title=f"Save Attendance Report for {student_name}"
+        )
+        if not file_path:
+            return
+
+        try:
+            # Bus name lookup map
+            bus_name_map = {str(b.get("bus_id", "")).strip(): b.get("bus_name", "") for b in self.buses}
+
+            with open(file_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+
+                # Header block for School & Parents
+                writer.writerow(["================================================================================"])
+                writer.writerow(["OFFICIAL STUDENT BUS ATTENDANCE REPORT — PARENT COPY"])
+                writer.writerow(["================================================================================"])
+                writer.writerow(["Student Name", student_name])
+                writer.writerow(["Student ID", student_id])
+                writer.writerow(["Class / Grade", class_name])
+                writer.writerow(["Primary Assigned Bus", assigned_bus])
+                writer.writerow(["Total Days Boarded", f"{len(records)} Days Present"])
+                writer.writerow(["Report Generated On", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+                writer.writerow(["================================================================================"])
+                writer.writerow([])
+
+                # Column Headers
+                writer.writerow([
+                    "Date",
+                    "Day of Week",
+                    "Boarding Time",
+                    "Bus ID",
+                    "Route / Bus Name",
+                    "Status",
+                    "Terminal Device",
+                    "Event Reference"
+                ])
+
+                # Data Rows
+                for r in records:
+                    date_val = r.get("attendance_date", "")
+                    day_name = "--"
+                    if date_val:
+                        try:
+                            day_name = datetime.strptime(date_val, "%Y-%m-%d").strftime("%A")
+                        except Exception:
+                            day_name = "--"
+
+                    bid = str(r.get("bus_id", "")).strip()
+                    b_route = bus_name_map.get(bid, f"Bus {bid}")
+
+                    writer.writerow([
+                        date_val,
+                        day_name,
+                        r.get("attendance_time", ""),
+                        bid,
+                        b_route,
+                        r.get("status", "Present"),
+                        r.get("device_id", "--"),
+                        r.get("event_id", "--")
+                    ])
+
+            messagebox.showinfo(
+                "Export Complete",
+                f"Student Attendance Report successfully generated!\n\n"
+                f"Student: {student_name} ({student_id})\n"
+                f"Total Records: {len(records)} check-ins\n\n"
+                f"Saved to:\n{file_path}"
+            )
+        except Exception as e:
+            messagebox.showerror("Export Failed", f"Failed to save CSV file:\n{e}")
 
     def export_csv(self) -> None:
         if not self.attendance_records:
@@ -1467,7 +1776,7 @@ class AttendanceManagerApp(ctk.CTk):
         file_path = filedialog.asksaveasfilename(
             defaultextension=".csv",
             filetypes=[("CSV Files", "*.csv")],
-            initialfile=f"attendance_report_{datetime.now().strftime('%Y%m%d')}.csv"
+            initialfile=f"fleet_attendance_report_{datetime.now().strftime('%Y%m%d')}.csv"
         )
         if not file_path:
             return
@@ -1557,6 +1866,28 @@ class AttendanceManagerApp(ctk.CTk):
         self.render_attendance_table(self.attendance_records)
         self.render_buses_table()
         self.render_students_table()
+
+        # Update Reports dropdown and fleet report status
+        if hasattr(self, "rep_student_combo"):
+            student_options = [
+                f"{s.get('student_id', '')} - {s.get('name', '')} ({s.get('class_name', '--')})"
+                for s in self.students if s.get("student_id") and s.get("is_active", True)
+            ]
+            if not student_options:
+                student_options = ["No registered students"]
+            self.rep_student_combo.configure(values=student_options)
+            cur_val = self.rep_student_var.get()
+            if (not cur_val or cur_val not in student_options or cur_val == "Select Student...") and student_options:
+                first_opt = student_options[0]
+                self.rep_student_var.set(first_opt)
+                self._on_rep_student_selected(first_opt)
+
+        if hasattr(self, "fleet_rep_status_lbl"):
+            bus_txt = self.bus_filter_var.get() if hasattr(self, "bus_filter_var") else "All Buses"
+            date_txt = self.date_entry.get().strip() if hasattr(self, "date_entry") else datetime.now().strftime("%Y-%m-%d")
+            self.fleet_rep_status_lbl.configure(
+                text=f"Active Filter: Bus '{bus_txt}' | Date: {date_txt} | Records Available: {len(self.attendance_records)} check-ins ready"
+            )
 
     def apply_attendance_filters(self) -> None:
         self.refresh_all_data()

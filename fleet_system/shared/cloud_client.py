@@ -572,6 +572,7 @@ class FleetCloudClient:
         self,
         date_str: Optional[str] = None,
         bus_id: Optional[str] = None,
+        student_id: Optional[str] = None,
         limit: int = 500
     ) -> List[Dict[str, Any]]:
         """Query attendance history with optional filters."""
@@ -583,6 +584,8 @@ class FleetCloudClient:
                 params += f"&attendance_date=eq.{date_str.strip()}"
             if bus_id:
                 params += f"&bus_id=eq.{bus_id.strip()}"
+            if student_id:
+                params += f"&student_id=eq.{student_id.strip()}"
             if limit:
                 params += f"&limit={limit}"
 
