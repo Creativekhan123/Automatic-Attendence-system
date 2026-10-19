@@ -2138,7 +2138,7 @@ class AttendanceManagerApp(ctk.CTk):
         ctk.CTkLabel(
             setup_card,
             text="Setting up this software for a new school branch with a new Supabase project?\n"
-                 "Click the button below to instantly copy the complete master database setup SQL to your clipboard. "
+                 "Click the button below to instantly copy the complete master database setup SQL to your clipboard. \n"
                  "Then paste it into your Supabase SQL Editor and click RUN. It will automatically create all tables, "
                  "foreign keys, biometric vectors, permissions, and cascade deletion rules in 5 seconds!",
             font=ctk.CTkFont(size=12),
