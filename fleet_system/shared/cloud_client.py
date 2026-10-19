@@ -182,6 +182,10 @@ class FleetCloudClient:
             self._last_error = str(e)
             return False, f"Connection failed: {e}"
 
+    def get_last_error(self) -> str:
+        """Return the most recent error message or empty string."""
+        return self._last_error or ""
+
     # =========================================================================
     # BUS OPERATIONS
     # =========================================================================
@@ -258,26 +262,104 @@ class FleetCloudClient:
                 json=payload,
                 timeout=self.timeout
             )
-            return resp.status_code in (200, 201, 204)
+            if resp.status_code in (200, 201, 204):
+                self._last_error = None
+                return True
+            try:
+                ej = resp.json()
+                self._last_error = ej.get("message") or ej.get("hint") or resp.text
+            except Exception:
+                self._last_error = resp.text
+            logger.error(f"Failed to upsert bus {bus_id}: {self._last_error}")
+            return False
         except Exception as e:
             logger.error(f"Error upserting bus {bus_id}: {e}")
             self._last_error = str(e)
             return False
 
     def delete_bus(self, bus_id: str) -> bool:
-        """Delete a bus from cloud."""
+        """Delete a bus from cloud, or safely soft-deactivate if linked records exist."""
         if not self.is_configured() or not bus_id:
+            self._last_error = "Cloud client is not configured or bus_id is empty"
             return False
         clean_id = bus_id.strip()
+
+        # Step 1: Attempt smart RPC call (if migration 005 has been executed in Supabase)
+        try:
+            rpc_resp = self.session.post(
+                f"{self.url}/rest/v1/rpc/delete_or_deactivate_bus",
+                headers=self._get_headers(),
+                json={"target_bus_id": clean_id},
+                timeout=self.timeout
+            )
+            if rpc_resp.status_code == 200:
+                rpc_data = rpc_resp.json()
+                if isinstance(rpc_data, dict):
+                    if rpc_data.get("success"):
+                        self._last_error = None
+                        return True
+                    else:
+                        self._last_error = rpc_data.get("message", "RPC deletion failed.")
+                        return False
+        except Exception as e:
+            logger.debug(f"RPC delete_or_deactivate_bus error/fallback: {e}")
+
+        # Step 2: Attempt standard REST DELETE
         try:
             resp = self.session.delete(
                 f"{self.url}/rest/v1/buses?bus_id=eq.{clean_id}",
                 headers=self._get_headers(prefer="return=minimal"),
                 timeout=self.timeout
             )
-            return resp.status_code in (200, 204)
+            if resp.status_code in (200, 204):
+                self._last_error = None
+                return True
+
+            err_msg = ""
+            try:
+                ej = resp.json()
+                err_msg = ej.get("message") or ej.get("hint") or resp.text
+            except Exception:
+                err_msg = resp.text
+
+            # Step 3: If blocked by Foreign Key (409 or FK violation), attempt soft-deactivation
+            if resp.status_code == 409 or "violates foreign key constraint" in err_msg.lower():
+                patch_resp = self.session.patch(
+                    f"{self.url}/rest/v1/buses?bus_id=eq.{clean_id}",
+                    headers=self._get_headers(prefer="return=minimal"),
+                    json={"is_active": False},
+                    timeout=self.timeout
+                )
+                if patch_resp.status_code in (200, 204):
+                    self._last_error = None
+                    return True
+                else:
+                    try:
+                        pj = patch_resp.json()
+                        p_msg = pj.get("message") or patch_resp.text
+                    except Exception:
+                        p_msg = patch_resp.text
+                    self._last_error = (
+                        f"Bus '{clean_id}' has linked attendance records or students and cannot be deleted. "
+                        f"Soft-deactivation also failed: {p_msg}"
+                    )
+                    return False
+
+            if resp.status_code == 401 or "permission denied" in err_msg.lower():
+                self._last_error = (
+                    f"Supabase Permission Denied (HTTP 401):\n"
+                    f"The current API role does not have DELETE permission on 'public.buses'.\n\n"
+                    f"-> Please run migration '005_fix_bus_deletion_and_policies.sql' in your Supabase SQL Editor.\n"
+                    f"Details: {err_msg}"
+                )
+            else:
+                self._last_error = f"HTTP {resp.status_code}: {err_msg}"
+
+            logger.error(f"Failed to delete bus {clean_id}: {self._last_error}")
+            return False
+
         except Exception as e:
-            logger.error(f"Error deleting bus {bus_id}: {e}")
+            logger.error(f"Error deleting bus {clean_id}: {e}")
             self._last_error = str(e)
             return False
 
@@ -409,6 +491,7 @@ class FleetCloudClient:
                 timeout=self.timeout
             )
             if del_resp.status_code in (200, 204):
+                self._last_error = None
                 return True
 
             # If hard delete is blocked by RLS/FK, mark is_active=false
@@ -418,7 +501,16 @@ class FleetCloudClient:
                 json={"is_active": False},
                 timeout=self.timeout
             )
-            return patch_resp.status_code in (200, 204)
+            if patch_resp.status_code in (200, 204):
+                self._last_error = None
+                return True
+
+            try:
+                pj = patch_resp.json()
+                self._last_error = pj.get("message") or patch_resp.text
+            except Exception:
+                self._last_error = patch_resp.text
+            return False
         except Exception as e:
             logger.error(f"Error deleting student {clean_id}: {e}")
             self._last_error = str(e)

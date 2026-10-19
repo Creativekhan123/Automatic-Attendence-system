@@ -927,23 +927,28 @@ class AttendanceManagerApp(ctk.CTk):
             threading.Thread(target=_async_edit, daemon=True).start()
 
     def delete_bus_permanently(self, bus_id: str, assigned_count: int) -> None:
-        """Permanently delete a bus from Supabase cloud after confirmation."""
-        warning_msg = f"Are you sure you want to delete bus '{bus_id}' from the fleet?"
+        """Permanently delete or deactivate a bus from Supabase cloud after confirmation."""
+        warning_msg = f"Are you sure you want to remove bus '{bus_id}' from the fleet?"
         if assigned_count > 0:
-            warning_msg += f"\n\n⚠️ WARNING: There are {assigned_count} students currently assigned to this bus!\nThey will remain in the directory but may need to be reassigned to another bus."
+            warning_msg += (
+                f"\n\n⚠️ NOTE: There are {assigned_count} student(s) currently assigned to this bus.\n"
+                "If historical attendance records exist, the bus will be safely deactivated (archived) "
+                "to preserve attendance history without data loss."
+            )
 
-        confirm = messagebox.askyesno("Confirm Bus Deletion", warning_msg, parent=self)
+        confirm = messagebox.askyesno("Confirm Bus Removal", warning_msg, parent=self)
         if not confirm:
             return
 
-        self.status_lbl.configure(text=f"Deleting bus {bus_id} from Supabase...", text_color="#fbbf24")
+        self.status_lbl.configure(text=f"Removing bus {bus_id} from Supabase...", text_color="#fbbf24")
         def _async_del():
             ok = self.cloud.delete_bus(bus_id)
             if ok:
-                self.after(0, lambda: messagebox.showinfo("Deleted", f"Bus '{bus_id}' deleted successfully from Supabase."))
+                self.after(0, lambda: messagebox.showinfo("Bus Removed", f"Bus '{bus_id}' was successfully removed from the active fleet."))
                 self.refresh_all_data()
             else:
-                self.after(0, lambda: messagebox.showerror("Cloud Error", f"Failed to delete bus: {self.cloud._last_error}"))
+                err = self.cloud.get_last_error() or "Unknown error"
+                self.after(0, lambda: messagebox.showerror("Cloud Deletion Error", f"Failed to delete bus '{bus_id}':\n\n{err}"))
         threading.Thread(target=_async_del, daemon=True).start()
 
     # =========================================================================
