@@ -52,6 +52,7 @@ hidden_imports = [
     'fleet_system',
     'fleet_system.shared',
     'fleet_system.shared.cloud_client',
+    'fleet_system.shared.setup_sql',
     'fleet_system.device_app',
     'fleet_system.device_app.local_db',
     'fleet_system.manager_app',

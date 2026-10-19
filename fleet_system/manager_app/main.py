@@ -2117,6 +2117,112 @@ class AttendanceManagerApp(ctk.CTk):
         )
         reset_btn.pack(side="right")
 
+        # =====================================================================
+        # CARD 2: NEW BRANCH DATABASE SETUP (1-CLICK COPY MASTER SQL)
+        # =====================================================================
+        setup_card = ctk.CTkFrame(scroll, fg_color=("#ffffff", "#1c1f2b"), corner_radius=12, border_width=1, border_color=("#e2e8f0", "#2d3748"))
+        setup_card.pack(fill="x", padx=40, pady=(10, 25))
+
+        # Header with icon
+        setup_hdr = ctk.CTkFrame(setup_card, fg_color="transparent")
+        setup_hdr.pack(fill="x", padx=25, pady=(20, 5))
+
+        ctk.CTkLabel(
+            setup_hdr,
+            text="🚀 Initial Database Setup (New School Branch)",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=("#10b981", "#34d399")
+        ).pack(side="left")
+
+        # Description
+        ctk.CTkLabel(
+            setup_card,
+            text="Setting up this software for a new school branch with a new Supabase project?\n"
+                 "Click the button below to instantly copy the complete master database setup SQL to your clipboard. "
+                 "Then paste it into your Supabase SQL Editor and click RUN. It will automatically create all tables, "
+                 "foreign keys, biometric vectors, permissions, and cascade deletion rules in 5 seconds!",
+            font=ctk.CTkFont(size=12),
+            text_color=("#64748b", "#94a3b8"),
+            justify="left"
+        ).pack(anchor="w", padx=25, pady=(0, 15))
+
+        # Step by step guide box
+        steps_frame = ctk.CTkFrame(setup_card, fg_color=("#f8fafc", "#161822"), corner_radius=8, border_width=1, border_color=("#e2e8f0", "#2d3748"))
+        steps_frame.pack(fill="x", padx=25, pady=(0, 18))
+
+        steps_text = (
+            "📌 Quick 3-Step Setup for New Branches:\n"
+            "  1. Click '📋 Copy Setup SQL' below (copies full database schema & security rules to clipboard).\n"
+            "  2. In your new Supabase Project Dashboard, go to 'SQL Editor' ➔ 'New Query'.\n"
+            "  3. Press Ctrl + V (Paste) and click the green 'RUN' button. Then enter the project keys in the form above!"
+        )
+        ctk.CTkLabel(
+            steps_frame,
+            text=steps_text,
+            font=ctk.CTkFont(size=12),
+            text_color=("#0f172a", "#f8fafc"),
+            justify="left",
+            anchor="w"
+        ).pack(fill="x", padx=16, pady=12)
+
+        # Action Buttons
+        setup_btn_row = ctk.CTkFrame(setup_card, fg_color="transparent")
+        setup_btn_row.pack(fill="x", padx=25, pady=(0, 22))
+
+        copy_sql_btn = ctk.CTkButton(
+            setup_btn_row,
+            text="📋 Copy Setup SQL to Clipboard",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#10b981",
+            hover_color="#059669",
+            height=42,
+            width=260,
+            command=self.copy_master_setup_sql
+        )
+        copy_sql_btn.pack(side="left", padx=(0, 12))
+
+        open_sb_btn = ctk.CTkButton(
+            setup_btn_row,
+            text="🌐 Open Supabase Dashboard",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=("#e2e8f0", "#334155"),
+            text_color=("#0f172a", "#f8fafc"),
+            hover_color=("#cbd5e1", "#475569"),
+            height=42,
+            width=230,
+            command=self.open_supabase_in_browser
+        )
+        open_sb_btn.pack(side="left")
+
+    def copy_master_setup_sql(self) -> None:
+        """Copy the embedded master setup SQL to the user's system clipboard."""
+        try:
+            from fleet_system.shared.setup_sql import MASTER_SUPABASE_SETUP_SQL
+            sql_text = MASTER_SUPABASE_SETUP_SQL.strip()
+            self.clipboard_clear()
+            self.clipboard_append(sql_text)
+            self.update()  # Keeps clipboard alive on Windows even after window lose focus
+
+            messagebox.showinfo(
+                "SQL Copied to Clipboard!",
+                "✅ Master Supabase Setup SQL copied to clipboard!\n\n"
+                "Next Steps:\n"
+                "1. Open your Supabase Project Dashboard\n"
+                "2. Go to 'SQL Editor' -> 'New query'\n"
+                "3. Press Ctrl + V (Paste) and click RUN\n\n"
+                "All tables, foreign keys, biometric vectors, and cascade rules will be created automatically in 5 seconds!"
+            )
+        except Exception as e:
+            messagebox.showerror("Clipboard Error", f"Failed to copy SQL to clipboard:\n{e}")
+
+    def open_supabase_in_browser(self) -> None:
+        """Open Supabase dashboard in default web browser."""
+        import webbrowser
+        try:
+            webbrowser.open("https://supabase.com/dashboard")
+        except Exception as e:
+            messagebox.showerror("Browser Error", f"Could not open browser:\n{e}")
+
     def _toggle_key_visibility(self) -> None:
         if self.key_visible:
             self.cfg_key_entry.configure(show="•")
