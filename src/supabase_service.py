@@ -518,7 +518,7 @@ class SupabaseService:
             try:
                 res = self.client.table("attendance").select("event_id").in_("event_id", ok_ids).execute()
                 found = {
-                    row["event_id"] for row in (res.data or [])
+                    str(row["event_id"]) for row in (res.data or [])
                     if isinstance(row, dict) and "event_id" in row
                 }
                 for eid in ok_ids:

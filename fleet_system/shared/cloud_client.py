@@ -241,6 +241,46 @@ class FleetCloudClient:
             self._last_error = str(e)
             return False
 
+    def upsert_bus(self, bus_id: str, bus_name: Optional[str] = None, is_active: bool = True) -> bool:
+        """Upsert a bus in cloud with given name and status."""
+        if not self.is_configured() or not bus_id:
+            return False
+        clean_id = bus_id.strip()
+        payload = {
+            "bus_id": clean_id,
+            "bus_name": (bus_name.strip() if bus_name else f"Bus {clean_id}"),
+            "is_active": is_active
+        }
+        try:
+            resp = self.session.post(
+                f"{self.url}/rest/v1/buses",
+                headers=self._get_headers(prefer="resolution=merge-duplicates"),
+                json=payload,
+                timeout=self.timeout
+            )
+            return resp.status_code in (200, 201, 204)
+        except Exception as e:
+            logger.error(f"Error upserting bus {bus_id}: {e}")
+            self._last_error = str(e)
+            return False
+
+    def delete_bus(self, bus_id: str) -> bool:
+        """Delete a bus from cloud."""
+        if not self.is_configured() or not bus_id:
+            return False
+        clean_id = bus_id.strip()
+        try:
+            resp = self.session.delete(
+                f"{self.url}/rest/v1/buses?bus_id=eq.{clean_id}",
+                headers=self._get_headers(prefer="return=minimal"),
+                timeout=self.timeout
+            )
+            return resp.status_code in (200, 204)
+        except Exception as e:
+            logger.error(f"Error deleting bus {bus_id}: {e}")
+            self._last_error = str(e)
+            return False
+
     # =========================================================================
     # STUDENT OPERATIONS
     # =========================================================================

@@ -113,6 +113,7 @@ class TestDatabaseLocalAndSync(unittest.TestCase):
         self.db.upsert_student_from_cloud("202", "Bob Jones", "Grade 6", "BUS01", True)
         student = self.db.get_student_by_id("202")
         self.assertIsNotNone(student)
+        assert student is not None
         self.assertEqual(student["name"], "Bob Jones")
         self.assertEqual(student["class_name"], "Grade 6")
         self.assertEqual(student["bus_id"], "BUS01")

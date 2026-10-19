@@ -382,6 +382,7 @@ class TestAllowedAndDeniedOperations(unittest.TestCase):
         self.assertTrue(ok)
         s = self.db.get_student_by_id("103")
         self.assertIsNotNone(s)
+        assert s is not None
         self.assertEqual(s["name"], "Student Three")
 
     # --- DENIED OPERATIONS ---
@@ -530,6 +531,7 @@ class TestStudentDeletionAndIdReuse(unittest.TestCase):
         self.db.register_student(stu_id, "Alice Old", "5A", "BUS01", emb1)
         alice = self.db.get_student_by_id(stu_id)
         self.assertIsNotNone(alice)
+        assert alice is not None
         self.assertTrue(alice["is_active"])
         self.assertIsNotNone(alice["face_embedding"])
 
@@ -544,6 +546,7 @@ class TestStudentDeletionAndIdReuse(unittest.TestCase):
         # 4. Verify Alice is inactive and biometric face embedding is wiped
         alice_del = self.db.get_student_by_id(stu_id, active_only=False)
         self.assertIsNotNone(alice_del)
+        assert alice_del is not None
         self.assertFalse(alice_del["is_active"])
         self.assertIsNone(alice_del["face_embedding"])  # Biometric purged
 
@@ -565,6 +568,7 @@ class TestStudentDeletionAndIdReuse(unittest.TestCase):
         # 6. Verify Bob is now the active owner of that ID
         bob = self.db.get_student_by_id(stu_id, active_only=True)
         self.assertIsNotNone(bob)
+        assert bob is not None
         self.assertTrue(bob["is_active"])
         self.assertEqual(bob["name"], "Bob New")
         self.assertEqual(bob["class_name"], "6B")
@@ -605,6 +609,7 @@ class TestStudentDeletionAndIdReuse(unittest.TestCase):
         # Student is marked inactive and face_embedding is purged (None)
         stu = self.db.get_student_by_id(stu_id)
         self.assertIsNotNone(stu)
+        assert stu is not None
         self.assertFalse(stu["is_active"])
         self.assertIsNone(stu["face_embedding"])
 

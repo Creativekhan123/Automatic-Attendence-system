@@ -19,10 +19,13 @@ class FaceDetector:
             local_path = os.path.join(os.path.dirname(__file__), "haarcascade_frontalface_default.xml")
             if os.path.exists(local_path):
                 cascade_path = local_path
-            elif hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
-                cascade_path = os.path.join(
-                    cv2.data.haarcascades, "haarcascade_frontalface_default.xml"
-                )
+            elif hasattr(cv2, "data"):
+                cv2_data = getattr(cv2, "data", None)
+                haarcascades = getattr(cv2_data, "haarcascades", None) if cv2_data else None
+                if haarcascades:
+                    cascade_path = os.path.join(
+                        haarcascades, "haarcascade_frontalface_default.xml"
+                    )
 
         if not cascade_path or not os.path.exists(cascade_path):
             raise FileNotFoundError(

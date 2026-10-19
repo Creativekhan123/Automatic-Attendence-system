@@ -9,6 +9,8 @@
     "src",
     "fleet_system"
   ],
+  "venvPath": ".",
+  "venv": ".venv",
   "executionEnvironments": [
     {
       "root": ".",

@@ -55,13 +55,13 @@ class AttendanceManagerApp(ctk.CTk):
             "Live Attendance",
             "Monitor today's student boarding activity across your fleet."
         ),
+        "bus_management": (
+            "Bus Fleet Management",
+            "Monitor fleet school buses, routes, capacity, and boarding rates."
+        ),
         "student_directory": (
             "Student Directory & Bus Assignment",
             "Manage student rosters, bus assignments, and biometric status."
-        ),
-        "bus_management": (
-            "Bus Fleet Management",
-            "View and manage fleet school buses, driver routes, and assignments."
         ),
         "register_student": (
             "Register Student (Live Camera)",
@@ -72,12 +72,12 @@ class AttendanceManagerApp(ctk.CTk):
             "Generate and download official school bus attendance logs in CSV format."
         ),
         "cloud_settings": (
-            "Cloud Configuration & Settings",
-            "Manage central Supabase connection credentials and endpoints."
+            "Cloud & Workstation Settings",
+            "Manage central Supabase connection credentials, endpoints, and workstation setup."
         ),
         "settings": (
-            "Cloud Configuration & Settings",
-            "Manage central Supabase connection credentials and endpoints."
+            "Cloud & Workstation Settings",
+            "Manage central Supabase connection credentials, endpoints, and workstation setup."
         ),
     }
 
@@ -237,12 +237,11 @@ class AttendanceManagerApp(ctk.CTk):
 
         self.nav_items_config = [
             ("live_attendance", "⊞", "Live Attendance", "WORKSPACE"),
-            ("student_directory", "👥", "Student Directory", "WORKSPACE"),
             ("bus_management", "🚌", "Bus Management", "WORKSPACE"),
+            ("student_directory", "👥", "Student Directory", "WORKSPACE"),
             ("register_student", "👤+", "Register Student", "WORKSPACE"),
             ("reports", "📊", "Reports & Export", "WORKSPACE"),
-            ("cloud_settings", "☁️", "Cloud Settings", "SYSTEM"),
-            ("settings", "⚙️", "Settings", "SYSTEM"),
+            ("cloud_settings", "⚙️", "Settings", "SYSTEM"),
         ]
 
         # Add WORKSPACE buttons
@@ -342,6 +341,7 @@ class AttendanceManagerApp(ctk.CTk):
 
         # Individual Page Frames
         self.tab_attendance = ctk.CTkFrame(self.pages_container, fg_color="transparent")
+        self.tab_buses = ctk.CTkFrame(self.pages_container, fg_color="transparent")
         self.tab_students = ctk.CTkFrame(self.pages_container, fg_color="transparent")
         self.tab_register = ctk.CTkFrame(self.pages_container, fg_color="transparent")
         self.tab_reports = ctk.CTkFrame(self.pages_container, fg_color="transparent")
@@ -349,6 +349,7 @@ class AttendanceManagerApp(ctk.CTk):
 
         # Build each page's content inside its respective frame
         self._build_attendance_tab()
+        self._build_buses_tab()
         self._build_students_tab()
         self._build_register_tab()
         self._build_reports_tab()
@@ -387,7 +388,7 @@ class AttendanceManagerApp(ctk.CTk):
     def _update_nav_styles(self) -> None:
         """Apply active highlight styling to selected sidebar item and reset others."""
         for key, btn in self.nav_buttons.items():
-            is_active = (key == self.current_page_key) or (key == "settings" and self.current_page_key == "cloud_settings")
+            is_active = (key == self.current_page_key) or (key == "cloud_settings" and self.current_page_key in ("cloud_settings", "settings"))
             if is_active:
                 btn.configure(
                     fg_color=("#e0f2fe", "#1e293b"),
@@ -410,7 +411,7 @@ class AttendanceManagerApp(ctk.CTk):
             target_frame = self.tab_settings
             actual_key = "cloud_settings"
         elif page_key == "bus_management":
-            target_frame = self.tab_students
+            target_frame = self.tab_buses
             actual_key = "bus_management"
         elif page_key == "student_directory":
             target_frame = self.tab_students
@@ -430,7 +431,7 @@ class AttendanceManagerApp(ctk.CTk):
             self.stop_registration_camera()
 
         # Hide all pages and show target page
-        for p in (self.tab_attendance, self.tab_students, self.tab_register, self.tab_reports, self.tab_settings):
+        for p in (self.tab_attendance, self.tab_buses, self.tab_students, self.tab_register, self.tab_reports, self.tab_settings):
             p.pack_forget()
 
         target_frame.pack(fill="both", expand=True)
@@ -583,6 +584,366 @@ class AttendanceManagerApp(ctk.CTk):
             status_badge.pack(side="left", padx=10)
 
     # =========================================================================
+    # TAB: BUS FLEET MANAGEMENT
+    # =========================================================================
+
+    def _build_buses_tab(self) -> None:
+        """Dedicated Bus Fleet Management tab with overview statistics and route operations."""
+        # Top Fleet Summary Metrics Cards
+        stats_frame = ctk.CTkFrame(self.tab_buses, fg_color="transparent")
+        stats_frame.pack(fill="x", padx=10, pady=(4, 8))
+
+        # 1. Total Fleet Buses
+        card_buses = ctk.CTkFrame(
+            stats_frame,
+            fg_color=("#ffffff", "#161822"),
+            corner_radius=10,
+            border_width=1,
+            border_color=("#e2e8f0", "#2d3748")
+        )
+        card_buses.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        ctk.CTkLabel(
+            card_buses,
+            text="🚌 Total Fleet Buses",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(anchor="w", padx=14, pady=(10, 2))
+        self.bus_stat_total = ctk.CTkLabel(
+            card_buses,
+            text="0",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=("#0284c7", "#38bdf8")
+        )
+        self.bus_stat_total.pack(anchor="w", padx=14, pady=(0, 10))
+
+        # 2. Total Students Assigned
+        card_students = ctk.CTkFrame(
+            stats_frame,
+            fg_color=("#ffffff", "#161822"),
+            corner_radius=10,
+            border_width=1,
+            border_color=("#e2e8f0", "#2d3748")
+        )
+        card_students.pack(side="left", fill="both", expand=True, padx=6)
+        ctk.CTkLabel(
+            card_students,
+            text="👥 Enrolled In Fleet",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(anchor="w", padx=14, pady=(10, 2))
+        self.bus_stat_students = ctk.CTkLabel(
+            card_students,
+            text="0",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=("#6366f1", "#818cf8")
+        )
+        self.bus_stat_students.pack(anchor="w", padx=14, pady=(0, 10))
+
+        # 3. Boarded Today
+        card_present = ctk.CTkFrame(
+            stats_frame,
+            fg_color=("#ffffff", "#161822"),
+            corner_radius=10,
+            border_width=1,
+            border_color=("#e2e8f0", "#2d3748")
+        )
+        card_present.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        ctk.CTkLabel(
+            card_present,
+            text="✅ Boarded Today (Fleet)",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=("#64748b", "#94a3b8")
+        ).pack(anchor="w", padx=14, pady=(10, 2))
+        self.bus_stat_present = ctk.CTkLabel(
+            card_present,
+            text="0",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=("#10b981", "#34d399")
+        )
+        self.bus_stat_present.pack(anchor="w", padx=14, pady=(0, 10))
+
+        # Control Bar
+        ctrl = ctk.CTkFrame(
+            self.tab_buses,
+            fg_color=("#ffffff", "#1c1f2b"),
+            corner_radius=10,
+            border_width=1,
+            border_color=("#e2e8f0", "#2d3748")
+        )
+        ctrl.pack(fill="x", padx=10, pady=(0, 8))
+
+        add_bus_btn = ctk.CTkButton(
+            ctrl,
+            text="➕ Register New Bus",
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            font=ctk.CTkFont(weight="bold"),
+            command=self.prompt_add_new_bus
+        )
+        add_bus_btn.pack(side="left", padx=14, pady=10)
+
+        ctk.CTkLabel(ctrl, text="Search Bus:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(10, 5))
+        self.bus_search_entry = ctk.CTkEntry(ctrl, placeholder_text="Bus ID or Route Name...", width=200)
+        self.bus_search_entry.pack(side="left", padx=5)
+        self.bus_search_entry.bind("<KeyRelease>", lambda _: self.render_buses_table())
+
+        refresh_bus_btn = ctk.CTkButton(
+            ctrl,
+            text="🔄 Refresh Fleet",
+            width=110,
+            fg_color=("#e2e8f0", "#334155"),
+            text_color=("#0f172a", "#f8fafc"),
+            hover_color=("#cbd5e1", "#475569"),
+            font=ctk.CTkFont(weight="bold"),
+            command=self.refresh_all_data
+        )
+        refresh_bus_btn.pack(side="right", padx=14)
+
+        # Scrollable Bus Fleet Table Container
+        self.buses_scroll = ctk.CTkScrollableFrame(
+            self.tab_buses,
+            fg_color=("#ffffff", "#161822"),
+            corner_radius=10,
+            border_width=1,
+            border_color=("#e2e8f0", "#2d3748")
+        )
+        self.buses_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    def render_buses_table(self) -> None:
+        """Render all fleet buses with assignment counts, attendance stats, and route actions."""
+        if not hasattr(self, "buses_scroll"):
+            return
+
+        for widget in self.buses_scroll.winfo_children():
+            widget.destroy()
+
+        # Build comprehensive bus list (buses table + student assignments + attendance records)
+        bus_dict: Dict[str, Dict[str, Any]] = {}
+        for b in self.buses:
+            bid = str(b.get("bus_id", "")).strip()
+            if bid:
+                bus_dict[bid] = {
+                    "bus_id": bid,
+                    "bus_name": b.get("bus_name") or f"Bus {bid}",
+                    "is_active": b.get("is_active", True)
+                }
+
+        # Any extra buses found from students or attendance
+        for s in self.students:
+            bid = str(s.get("bus_id", "")).strip()
+            if bid and bid not in bus_dict:
+                bus_dict[bid] = {"bus_id": bid, "bus_name": f"Bus {bid}", "is_active": True}
+
+        for r in self.attendance_records:
+            bid = str(r.get("bus_id", "")).strip()
+            if bid and bid not in bus_dict:
+                bus_dict[bid] = {"bus_id": bid, "bus_name": f"Bus {bid}", "is_active": True}
+
+        # Calculate student and attendance metrics per bus
+        assigned_map: Dict[str, int] = {}
+        for s in self.students:
+            if s.get("is_active", True):
+                bid = str(s.get("bus_id", "")).strip()
+                assigned_map[bid] = assigned_map.get(bid, 0) + 1
+
+        present_map: Dict[str, int] = {}
+        for r in self.attendance_records:
+            if r.get("status") == "Present":
+                bid = str(r.get("bus_id", "")).strip()
+                present_map[bid] = present_map.get(bid, 0) + 1
+
+        # Search filter
+        query = self.bus_search_entry.get().strip().lower() if hasattr(self, "bus_search_entry") else ""
+        sorted_bus_ids = sorted(bus_dict.keys())
+        filtered_buses = []
+        for bid in sorted_bus_ids:
+            info = bus_dict[bid]
+            bname = str(info.get("bus_name", ""))
+            if query and (query not in bid.lower() and query not in bname.lower()):
+                continue
+            filtered_buses.append(info)
+
+        # Update KPI statistics
+        total_assigned_count = sum(assigned_map.values())
+        total_present_count = sum(present_map.values())
+        if hasattr(self, "bus_stat_total"):
+            self.bus_stat_total.configure(text=str(len(bus_dict)))
+        if hasattr(self, "bus_stat_students"):
+            self.bus_stat_students.configure(text=str(total_assigned_count))
+        if hasattr(self, "bus_stat_present"):
+            self.bus_stat_present.configure(text=str(total_present_count))
+
+        # Table Header
+        hdr = ctk.CTkFrame(self.buses_scroll, fg_color=("#e2e8f0", "#242938"), height=36, corner_radius=6)
+        hdr.pack(fill="x", pady=2)
+        cols = [
+            ("Bus ID", 110),
+            ("Bus Name / Route", 220),
+            ("Assigned Students", 140),
+            ("Boarded Today", 130),
+            ("Status", 90),
+            ("Actions", 210)
+        ]
+        for cname, w in cols:
+            ctk.CTkLabel(hdr, text=cname, width=w, font=ctk.CTkFont(weight="bold")).pack(side="left", padx=5, pady=5)
+
+        if not filtered_buses:
+            ctk.CTkLabel(
+                self.buses_scroll,
+                text="No school buses found for selected filter.",
+                text_color=("#64748b", "#94a3b8")
+            ).pack(pady=40)
+            return
+
+        for binfo in filtered_buses:
+            bid = binfo["bus_id"]
+            bname = binfo["bus_name"]
+            assigned = assigned_map.get(bid, 0)
+            present = present_map.get(bid, 0)
+
+            row = ctk.CTkFrame(self.buses_scroll, fg_color=("#f8fafc", "#1c1f2b"), height=42, corner_radius=6)
+            row.pack(fill="x", pady=3)
+
+            # Bus ID badge
+            bus_badge = ctk.CTkLabel(
+                row,
+                text=f"🚌 {bid}",
+                width=110,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=("#0284c7", "#38bdf8")
+            )
+            bus_badge.pack(side="left", padx=5)
+
+            # Bus Route / Name
+            ctk.CTkLabel(row, text=bname, width=220, anchor="w", font=ctk.CTkFont(size=12)).pack(side="left", padx=5)
+
+            # Assigned Students
+            ctk.CTkLabel(
+                row,
+                text=f"{assigned} students",
+                width=140,
+                font=ctk.CTkFont(weight="bold"),
+                text_color=("#0f172a", "#f8fafc")
+            ).pack(side="left", padx=5)
+
+            # Boarded Today badge
+            boarded_badge = ctk.CTkLabel(
+                row,
+                text=f"{present} / {assigned} Present",
+                width=130,
+                height=24,
+                corner_radius=12,
+                fg_color=("#dcfce7", "#064e3b") if present > 0 else ("#f1f5f9", "#1e293b"),
+                text_color=("#15803d", "#34d399") if present > 0 else ("#64748b", "#94a3b8"),
+                font=ctk.CTkFont(size=11, weight="bold")
+            )
+            boarded_badge.pack(side="left", padx=5)
+
+            # Status Badge
+            status_badge = ctk.CTkLabel(
+                row,
+                text="Active",
+                width=80,
+                height=22,
+                corner_radius=11,
+                fg_color=("#dcfce7", "#064e3b"),
+                text_color=("#15803d", "#34d399"),
+                font=ctk.CTkFont(size=11, weight="bold")
+            )
+            status_badge.pack(side="left", padx=5)
+
+            # Action Buttons container
+            act_frame = ctk.CTkFrame(row, fg_color="transparent", width=210)
+            act_frame.pack(side="left", padx=5)
+
+            # View Roster Button
+            view_btn = ctk.CTkButton(
+                act_frame,
+                text="👥 Roster",
+                width=72,
+                height=28,
+                fg_color=("#e2e8f0", "#334155"),
+                text_color=("#0f172a", "#f8fafc"),
+                hover_color=("#cbd5e1", "#475569"),
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda b=bid: self.view_bus_roster(b)
+            )
+            view_btn.pack(side="left", padx=2)
+
+            # Edit Route Name Button
+            edit_btn = ctk.CTkButton(
+                act_frame,
+                text="✏️ Edit",
+                width=60,
+                height=28,
+                fg_color=("#e2e8f0", "#334155"),
+                text_color=("#0f172a", "#f8fafc"),
+                hover_color=("#cbd5e1", "#475569"),
+                font=ctk.CTkFont(size=11, weight="bold"),
+                command=lambda b=bid, n=bname: self.prompt_edit_bus(b, n)
+            )
+            edit_btn.pack(side="left", padx=2)
+
+            # Delete Bus Button
+            del_btn = ctk.CTkButton(
+                act_frame,
+                text="🗑️",
+                width=36,
+                height=28,
+                fg_color="#ef4444",
+                hover_color="#dc2626",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                command=lambda b=bid, a=assigned: self.delete_bus_permanently(b, a)
+            )
+            del_btn.pack(side="left", padx=2)
+
+    def view_bus_roster(self, bus_id: str) -> None:
+        """Switch to Student Directory filtered to this bus."""
+        self.stu_bus_filter_var.set(bus_id)
+        self.show_page("student_directory")
+        self.render_students_table()
+
+    def prompt_edit_bus(self, bus_id: str, current_name: str) -> None:
+        """Prompt manager to update bus route/name in Supabase cloud."""
+        new_name = simpledialog.askstring(
+            f"Edit Bus Route: {bus_id}",
+            f"Enter new route description for {bus_id}:",
+            initialvalue=current_name,
+            parent=self
+        )
+        if new_name and new_name.strip():
+            clean_name = new_name.strip()
+            self.status_lbl.configure(text=f"Updating {bus_id} in cloud...", text_color="#fbbf24")
+            def _async_edit():
+                ok = self.cloud.upsert_bus(bus_id, clean_name)
+                if ok:
+                    self.after(0, lambda: messagebox.showinfo("Bus Updated", f"Route for '{bus_id}' updated successfully!"))
+                    self.refresh_all_data()
+                else:
+                    self.after(0, lambda: messagebox.showerror("Cloud Error", f"Failed to update bus: {self.cloud._last_error}"))
+            threading.Thread(target=_async_edit, daemon=True).start()
+
+    def delete_bus_permanently(self, bus_id: str, assigned_count: int) -> None:
+        """Permanently delete a bus from Supabase cloud after confirmation."""
+        warning_msg = f"Are you sure you want to delete bus '{bus_id}' from the fleet?"
+        if assigned_count > 0:
+            warning_msg += f"\n\n⚠️ WARNING: There are {assigned_count} students currently assigned to this bus!\nThey will remain in the directory but may need to be reassigned to another bus."
+
+        confirm = messagebox.askyesno("Confirm Bus Deletion", warning_msg, parent=self)
+        if not confirm:
+            return
+
+        self.status_lbl.configure(text=f"Deleting bus {bus_id} from Supabase...", text_color="#fbbf24")
+        def _async_del():
+            ok = self.cloud.delete_bus(bus_id)
+            if ok:
+                self.after(0, lambda: messagebox.showinfo("Deleted", f"Bus '{bus_id}' deleted successfully from Supabase."))
+                self.refresh_all_data()
+            else:
+                self.after(0, lambda: messagebox.showerror("Cloud Error", f"Failed to delete bus: {self.cloud._last_error}"))
+        threading.Thread(target=_async_del, daemon=True).start()
+
+    # =========================================================================
     # TAB 2: STUDENT DIRECTORY & BUS ASSIGNMENT
     # =========================================================================
 
@@ -622,6 +983,18 @@ class AttendanceManagerApp(ctk.CTk):
             command=self.prompt_add_new_bus
         )
         add_bus_btn.pack(side="left", padx=5)
+
+        manage_buses_btn = ctk.CTkButton(
+            ctrl,
+            text="🚌 Fleet Overview",
+            width=115,
+            fg_color=("#e2e8f0", "#334155"),
+            text_color=("#0f172a", "#f8fafc"),
+            hover_color=("#cbd5e1", "#475569"),
+            font=ctk.CTkFont(weight="bold"),
+            command=lambda: self.show_page("bus_management")
+        )
+        manage_buses_btn.pack(side="left", padx=5)
 
         ctk.CTkLabel(ctrl, text="Search:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(15, 5))
         self.search_entry = ctk.CTkEntry(ctrl, placeholder_text="ID or Name...", width=160)
@@ -716,17 +1089,21 @@ class AttendanceManagerApp(ctk.CTk):
     def prompt_add_new_bus(self) -> None:
         """Prompt manager to manually register a new bus in Supabase cloud."""
         new_bus = simpledialog.askstring("Add School Bus", "Enter New Bus ID (e.g. Bus02, Bus03):", parent=self)
-        if new_bus and new_bus.strip():
-            clean_b = new_bus.strip()
-            self.status_lbl.configure(text=f"Registering {clean_b} to Supabase...", text_color="#fbbf24")
-            def _async_add():
-                ok = self.cloud.ensure_bus(clean_b)
-                if ok:
-                    self.after(0, lambda: messagebox.showinfo("Bus Registered", f"Bus '{clean_b}' registered successfully in Supabase!"))
-                    self.refresh_all_data()
-                else:
-                    self.after(0, lambda: messagebox.showerror("Cloud Error", f"Failed to register bus: {self.cloud._last_error}"))
-            threading.Thread(target=_async_add, daemon=True).start()
+        if not new_bus or not new_bus.strip():
+            return
+        clean_b = new_bus.strip()
+        route_name = simpledialog.askstring("Bus Route Description", f"Enter Route or Description for {clean_b} (optional):", initialvalue=f"Bus {clean_b}", parent=self)
+        clean_name = route_name.strip() if (route_name and route_name.strip()) else f"Bus {clean_b}"
+
+        self.status_lbl.configure(text=f"Registering {clean_b} to Supabase...", text_color="#fbbf24")
+        def _async_add():
+            ok = self.cloud.upsert_bus(clean_b, clean_name)
+            if ok:
+                self.after(0, lambda: messagebox.showinfo("Bus Registered", f"Bus '{clean_b}' ({clean_name}) registered successfully in Supabase!"))
+                self.refresh_all_data()
+            else:
+                self.after(0, lambda: messagebox.showerror("Cloud Error", f"Failed to register bus: {self.cloud._last_error}"))
+        threading.Thread(target=_async_add, daemon=True).start()
 
     def delete_student_permanently(self, student_id: str, student_name: str) -> None:
         """Delete student from both local SQLite database and Supabase cloud."""
@@ -1178,6 +1555,7 @@ class AttendanceManagerApp(ctk.CTk):
             text_color="#10b981"
         )
         self.render_attendance_table(self.attendance_records)
+        self.render_buses_table()
         self.render_students_table()
 
     def apply_attendance_filters(self) -> None:
