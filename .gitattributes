@@ -1,0 +1,7 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Ensure bash scripts and systemd services always use LF (Linux line endings)
+*.sh text eol=lf
+*.service text eol=lf
+*.sql text eol=lf

@@ -1,0 +1,18 @@
+[Unit]
+Description=Bus Attendance Camera Engine (Headless)
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/Automatic-Attendence-system
+ExecStart=/home/pi/Automatic-Attendence-system/venv/bin/python3 -m fleet_system.device_app.main --headless --bus-id Bus01
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
