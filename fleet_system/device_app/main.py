@@ -376,7 +376,7 @@ class AttendanceDeviceApp:
             logger.error("Initialization failed. Exiting.")
             return
 
-        window_name = f"Fleet Attendance Device - {self.bus_id}"
+        window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
         logger.info(f"Running device loop (Headless={self.headless}).")
         logger.info("Controls: Press 'Q' to quit, Press 'C' to configure Bus ID, Press 'S' to configure Cloud Settings.")
 
@@ -397,7 +397,7 @@ class AttendanceDeviceApp:
                         break
                     elif key in (ord('c'), ord('C')):
                         self.prompt_reconfigure_device()
-                        window_name = f"Fleet Attendance Device - {self.bus_id}"
+                        window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
                     elif key in (ord('s'), ord('S')):
                         self.prompt_configure_credentials()
                 else:

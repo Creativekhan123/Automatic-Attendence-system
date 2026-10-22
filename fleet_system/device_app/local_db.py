@@ -21,13 +21,15 @@ class DeviceDatabase:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000;")
         return conn
 
     def _init_db(self) -> None:
         """Create tables if not existing."""
         with self._get_connection() as conn:
+            conn.execute("PRAGMA journal_mode = WAL;")
             cursor = conn.cursor()
             # 1. Students roster cache
             cursor.execute("""
