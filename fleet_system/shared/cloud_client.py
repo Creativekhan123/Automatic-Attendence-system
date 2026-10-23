@@ -125,7 +125,7 @@ class FleetCloudClient:
         self.fleet_token = fleet_token or FLEET_SYNC_TOKEN
         self.timeout = timeout
         self.session = requests.Session()
-        from urllib3.util import Retry
+        from urllib3.util.retry import Retry
         from requests.adapters import HTTPAdapter
         retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
         adapter = HTTPAdapter(max_retries=retries)
