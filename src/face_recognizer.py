@@ -25,7 +25,7 @@ class FaceRecognizer:
     def __init__(
         self,
         model_name: str = "buffalo_sc",
-        det_size: Tuple[int, int] = (320, 320),
+        det_size: Tuple[int, int] = (640, 640),
         similarity_threshold: float = 0.50
     ) -> None:
         """Initialize the FaceRecognizer and load models into memory.
