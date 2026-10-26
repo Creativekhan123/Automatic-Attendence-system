@@ -90,8 +90,12 @@ class AttendanceManagerApp(ctk.CTk):
         self.geometry("1180x760")
         self.minsize(1050, 680)
 
-        self.cloud = FleetCloudClient()
         self.local_device_db = DeviceDatabase("fleet_system/device_app/data/device.db")
+        self.cloud = FleetCloudClient()
+        saved_url = self.local_device_db.get_config("supabase_url", "")
+        saved_key = self.local_device_db.get_config("supabase_key", "")
+        if saved_url and saved_key:
+            self.cloud.reconfigure(saved_url, saved_key)
 
         # Cache data
         self.buses: List[Dict[str, Any]] = []
@@ -2271,6 +2275,8 @@ class AttendanceManagerApp(ctk.CTk):
 
         ok = save_cloud_credentials(url, key)
         self.cloud.reconfigure(url, key)
+        self.local_device_db.set_config("supabase_url", url)
+        self.local_device_db.set_config("supabase_key", key)
         if ok:
             messagebox.showinfo("Saved", "Cloud credentials saved to .env and applied successfully!")
         else:
@@ -2287,6 +2293,8 @@ class AttendanceManagerApp(ctk.CTk):
             return
 
         url, key = self.cloud.reset_to_defaults()
+        self.local_device_db.set_config("supabase_url", url)
+        self.local_device_db.set_config("supabase_key", key)
         self.cfg_url_entry.delete(0, "end")
         self.cfg_url_entry.insert(0, url)
         self.cfg_key_entry.delete(0, "end")

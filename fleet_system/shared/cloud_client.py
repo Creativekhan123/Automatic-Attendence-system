@@ -618,7 +618,7 @@ class FleetCloudClient:
 
         try:
             resp = self.session.post(
-                f"{self.url}/rest/v1/attendance",
+                f"{self.url}/rest/v1/attendance?on_conflict=student_id,attendance_date,bus_id",
                 headers=self._get_headers(prefer="resolution=merge-duplicates"),
                 json=clean_records,
                 timeout=self.timeout
@@ -643,7 +643,7 @@ class FleetCloudClient:
             eid = r.get("event_id")
             try:
                 resp = self.session.post(
-                    f"{self.url}/rest/v1/attendance",
+                    f"{self.url}/rest/v1/attendance?on_conflict=student_id,attendance_date,bus_id",
                     headers=self._get_headers(prefer="resolution=merge-duplicates"),
                     json=r,
                     timeout=self.timeout

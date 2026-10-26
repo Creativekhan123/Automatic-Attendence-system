@@ -29,6 +29,11 @@ class DeviceSyncWorker:
         self.db = db
         self.bus_id = bus_id.strip()
         self.cloud = cloud_client or FleetCloudClient()
+        if not cloud_client:
+            saved_url = self.db.get_config("supabase_url", "")
+            saved_key = self.db.get_config("supabase_key", "")
+            if saved_url and saved_key:
+                self.cloud.reconfigure(saved_url, saved_key)
         self.interval_seconds = interval_seconds
 
         self._thread: Optional[threading.Thread] = None
