@@ -41,8 +41,8 @@ else:
     load_dotenv()
 
 # Built-in credentials embedded into the application binary so it works out-of-the-box on any desktop
-_EMBEDDED_DEFAULT_URL = "https://ibowhhonlxzsikgijwnl.supabase.co"
-_EMBEDDED_DEFAULT_KEY = "sb_publishable_KL45K5cqhbCWHaZ_9GmTAA_g62FEdRW"
+_EMBEDDED_DEFAULT_URL = "https://iqxvzpcrzjkmninoofem.supabase.co"
+_EMBEDDED_DEFAULT_KEY = "sb_publishable_1-EgL38pVxCRx9MDq0OtrQ_0E_z4LwB"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/") or _EMBEDDED_DEFAULT_URL
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip() or _EMBEDDED_DEFAULT_KEY

@@ -10,6 +10,7 @@ Built with CustomTkinter:
 """
 import os
 import sys
+import re
 import time
 import csv
 import threading
@@ -1984,8 +1985,12 @@ class AttendanceManagerApp(ctk.CTk):
         self.kpi_card_absent.configure(text=str(unmarked_count))
         self.kpi_card_buses.configure(text=str(len(sorted_buses)))
 
+        url, _ = self.cloud.get_current_credentials()
+        match = re.search(r"https://([a-zA-Z0-9_-]+)\.supabase\.co", url)
+        proj_ref = (match.group(1)[:8] + "..") if match else "Cloud"
+
         self.status_lbl.configure(
-            text=f"✔ Connected | {time.strftime('%H:%M:%S')}",
+            text=f"✔ {proj_ref} | {time.strftime('%H:%M:%S')}",
             text_color="#10b981"
         )
         self.render_attendance_table(self.attendance_records)
@@ -2220,10 +2225,16 @@ class AttendanceManagerApp(ctk.CTk):
             messagebox.showerror("Clipboard Error", f"Failed to copy SQL to clipboard:\n{e}")
 
     def open_supabase_in_browser(self) -> None:
-        """Open Supabase dashboard in default web browser."""
+        """Open Supabase dashboard directly to active project editor."""
         import webbrowser
         try:
-            webbrowser.open("https://supabase.com/dashboard")
+            url, _ = self.cloud.get_current_credentials()
+            match = re.search(r"https://([a-zA-Z0-9_-]+)\.supabase\.co", url)
+            if match:
+                ref = match.group(1)
+                webbrowser.open(f"https://supabase.com/dashboard/project/{ref}/editor")
+            else:
+                webbrowser.open("https://supabase.com/dashboard")
         except Exception as e:
             messagebox.showerror("Browser Error", f"Could not open browser:\n{e}")
 

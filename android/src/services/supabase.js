@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-const DEFAULT_SUPABASE_URL = 'https://ibowhhonlxzsikgijwnl.supabase.co';
-const DEFAULT_SUPABASE_KEY = 'sb_publishable_KL45K5cqhbCWHaZ_9GmTAA_g62FEdRW';
+const DEFAULT_SUPABASE_URL = 'https://iqxvzpcrzjkmninoofem.supabase.co';
+const DEFAULT_SUPABASE_KEY = 'sb_publishable_1-EgL38pVxCRx9MDq0OtrQ_0E_z4LwB';
 
 export function getSupabaseConfig() {
   const customUrl = localStorage.getItem('fleet_supabase_url');
