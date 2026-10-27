@@ -11,7 +11,7 @@ import sys
 import re
 import json
 import logging
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, cast
 from datetime import datetime
 import requests
 from dotenv import load_dotenv
@@ -128,7 +128,7 @@ class FleetCloudClient:
         from urllib3.util.retry import Retry
         from requests.adapters import HTTPAdapter
         retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
-        adapter = HTTPAdapter(max_retries=retries)
+        adapter = HTTPAdapter(max_retries=cast(Any, retries))  # type: ignore
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         self._last_error: Optional[str] = None
