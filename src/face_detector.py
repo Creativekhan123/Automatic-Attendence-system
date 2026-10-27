@@ -72,4 +72,4 @@ class FaceDetector:
         if len(faces) == 0:
             return []
 
-        return [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces]
+        return [(x, y, w, h) for (x, y, w, h) in faces]
