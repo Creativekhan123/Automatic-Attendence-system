@@ -53,6 +53,12 @@ if [ -n "$INPUT_BUS" ]; then
     BUS_ID="$INPUT_BUS"
 fi
 
+DET_SIZE="320"
+read -p "Enter face detection resolution (320/480/640) [default: 320 for RPi 4]: " INPUT_RES
+if [ -n "$INPUT_RES" ]; then
+    DET_SIZE="$INPUT_RES"
+fi
+
 SERVICE_FILE="/etc/systemd/system/bus-attendance.service"
 
 echo "[4/5] Creating headless autostart service ($SERVICE_FILE)..."
@@ -66,7 +72,7 @@ Wants=network-online.target
 Type=simple
 User=$CURRENT_USER
 WorkingDirectory=$SCRIPT_DIR
-ExecStart=$SCRIPT_DIR/venv/bin/python3 -m fleet_system.device_app.main --headless --bus-id $BUS_ID
+ExecStart=$SCRIPT_DIR/venv/bin/python3 -m fleet_system.device_app.main --headless --bus-id $BUS_ID --det-size $DET_SIZE
 Restart=always
 RestartSec=5
 StandardOutput=journal

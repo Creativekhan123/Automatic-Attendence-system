@@ -297,3 +297,14 @@ class DeviceDatabase:
                 "total_present": total_present,
                 "pending_sync": pending_sync
             }
+
+    def get_present_student_ids(self, bus_id: str, att_date: Optional[str] = None) -> List[str]:
+        """Fetch list of student_ids already marked present on this bus today."""
+        date_str = att_date or datetime.now().strftime("%Y-%m-%d")
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT student_id FROM attendance 
+                WHERE bus_id = ? AND attendance_date = ?
+            """, (bus_id, date_str))
+            return [r[0] for r in cursor.fetchall()]

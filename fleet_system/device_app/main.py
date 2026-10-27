@@ -14,6 +14,7 @@ import sys
 import time
 import argparse
 import logging
+from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 import cv2
 import numpy as np
@@ -46,7 +47,8 @@ class AttendanceDeviceApp:
         headless: bool = False,
         similarity_threshold: float = 0.50,
         required_confirmations: int = 3,
-        confirmation_window: float = 2.0
+        confirmation_window: float = 2.0,
+        det_size: Optional[int] = None
     ) -> None:
         self.db_path = db_path
         self.camera_index = camera_index
@@ -71,6 +73,29 @@ class AttendanceDeviceApp:
         # Device ID is always identical to Bus ID
         self.device_id = self.bus_id
         self.db.set_config("device_id", self.device_id)
+
+        # Load persistent detection resolution (default 320 for Raspberry Pi 4 optimal speed)
+        saved_det_size = self.db.get_config("det_size", "320")
+        if det_size is not None:
+            self.det_size = int(det_size)
+            self.db.set_config("det_size", str(self.det_size))
+        else:
+            try:
+                self.det_size = int(saved_det_size) if saved_det_size else 320
+            except ValueError:
+                self.det_size = 320
+
+        # Performance & FPS meter attributes
+        self.fps: float = 0.0
+        self._last_frame_time: float = time.perf_counter()
+        self._frame_count: int = 0
+        self._last_health_log: float = time.time()
+
+        # In-memory vectorized roster cache (avoids frame-by-frame SQLite disk reads)
+        self._roster_students: List[Dict[str, Any]] = []
+        self._roster_matrix: Optional[np.ndarray] = None
+        self._last_roster_refresh: float = 0.0
+        self._already_present_ids: set = set()
 
         # Auto-detect headless mode on Linux if no display is available
         if not self.headless and sys.platform != "win32":
@@ -98,18 +123,21 @@ class AttendanceDeviceApp:
 
     def initialize(self) -> bool:
         """Start database, models, sync worker, and camera."""
-        logger.info(f"Initializing Attendance Device [Bus: {self.bus_id}, Device: {self.device_id}]")
+        logger.info(f"Initializing Attendance Device [Bus: {self.bus_id}, Device: {self.device_id}, DetSize: {self.det_size}x{self.det_size}]")
         
         # 1. Start background sync
         self.sync_worker.start()
 
-        # 2. Load FaceRecognizer model
+        # 2. Load FaceRecognizer model with persistent det_size
         try:
-            logger.info("Loading InsightFace buffalo_sc model pack...")
+            logger.info(f"Loading InsightFace buffalo_sc model pack (det_size: {self.det_size}x{self.det_size})...")
             self.face_recognizer = FaceRecognizer(
                 model_name="buffalo_sc",
+                det_size=(self.det_size, self.det_size),
                 similarity_threshold=self.similarity_threshold
             )
+            # Pre-load in-memory roster matrix
+            self._refresh_roster_cache(force=True)
         except Exception as e:
             logger.error(f"Failed to load FaceRecognizer: {e}")
             return False
@@ -123,26 +151,66 @@ class AttendanceDeviceApp:
         logger.info("Camera started successfully.")
         return True
 
+    def _refresh_roster_cache(self, force: bool = False) -> None:
+        """Cache active students and pre-normalized embeddings matrix in RAM for <0.05ms matching."""
+        now = time.time()
+        if not force and (now - self._last_roster_refresh) < 5.0:
+            return
+
+        try:
+            students = self.db.get_active_students_for_bus(self.bus_id)
+            valid_students = []
+            embeddings = []
+
+            for s in students:
+                emb_raw = s.get("face_embedding")
+                if emb_raw is not None:
+                    if isinstance(emb_raw, (bytes, bytearray)):
+                        arr = np.frombuffer(emb_raw, dtype=np.float32)
+                    else:
+                        arr = np.array(emb_raw, dtype=np.float32)
+                    if arr.size == 512:
+                        norm = np.linalg.norm(arr)
+                        if norm > 0:
+                            arr = arr / norm
+                        embeddings.append(arr)
+                        valid_students.append(s)
+
+            self._roster_students = valid_students
+            if embeddings:
+                self._roster_matrix = np.vstack(embeddings).astype(np.float32)
+            else:
+                self._roster_matrix = None
+
+            # Refresh present students set for today
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            present_ids = self.db.get_present_student_ids(self.bus_id, today_str)
+            self._already_present_ids = set(present_ids)
+            self._last_roster_refresh = now
+        except Exception as e:
+            logger.error(f"Error refreshing in-memory roster cache: {e}")
+
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Process a single video frame for face detection, tracking, and attendance marking."""
         now = time.time()
-        active_students = self.db.get_active_students_for_bus(self.bus_id)
+        self._refresh_roster_cache()
 
         if not self.face_recognizer:
             return frame
 
-        # Detect faces
-        faces = self.face_recognizer.extract_faces(frame)
+        # Detect faces with minimum size filter (40px) to skip tiny distant background noise
+        faces = self.face_recognizer.extract_faces(frame, min_size=40)
 
         for face in faces:
             bbox = face.bbox.astype(int)
             x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
             query_emb = face.embedding
 
-            # Match against local roster
-            label, matched_student, score = self.face_recognizer.identify_face(
+            # Match against local roster using vectorized BLAS dot product (<0.05ms)
+            label, matched_student, score = self.face_recognizer.identify_face_vectorized(
                 query_emb,
-                active_students
+                self._roster_matrix,
+                self._roster_students
             )
 
             box_color = (0, 0, 255)  # Red for Unknown
@@ -152,35 +220,41 @@ class AttendanceDeviceApp:
                 sid = matched_student["student_id"]
                 sname = matched_student["name"]
 
-                # Maintain sliding confirmation window
-                timestamps = self.confirmation_tracker.get(sid, [])
-                # Prune expired timestamps
-                timestamps = [t for t in timestamps if (now - t) <= self.confirmation_window]
-                timestamps.append(now)
-                self.confirmation_tracker[sid] = timestamps
-
-                obs_count = len(timestamps)
-
-                if obs_count >= self.required_confirmations:
-                    # Attempt attendance recording
-                    is_new, msg = self.db.record_attendance(
-                        student_id=sid,
-                        bus_id=self.bus_id,
-                        device_id=self.device_id,
-                        status="Present"
-                    )
-                    if is_new:
-                        box_color = (0, 255, 0)  # Green
-                        status_text = f"PRESENT: {sname}"
-                        self.banner = (f"ATTENDANCE MARKED: {sname} ({sid})", now + 3.0, False)
-                        logger.info(f"Marked attendance for {sname} ({sid}) on {self.bus_id}")
-                        self.sync_worker.trigger_immediate_sync()
-                    else:
-                        box_color = (0, 255, 0)
-                        status_text = f"ALREADY PRESENT: {sname}"
+                if sid in self._already_present_ids:
+                    box_color = (0, 255, 0)
+                    status_text = f"PRESENT: {sname}"
                 else:
-                    box_color = (0, 255, 255)  # Yellow for confirming
-                    status_text = f"CONFIRMING ({obs_count}/{self.required_confirmations}): {sname}"
+                    # Maintain sliding confirmation window
+                    timestamps = self.confirmation_tracker.get(sid, [])
+                    # Prune expired timestamps
+                    timestamps = [t for t in timestamps if (now - t) <= self.confirmation_window]
+                    timestamps.append(now)
+                    self.confirmation_tracker[sid] = timestamps
+
+                    obs_count = len(timestamps)
+
+                    if obs_count >= self.required_confirmations:
+                        # Attempt attendance recording
+                        is_new, msg = self.db.record_attendance(
+                            student_id=sid,
+                            bus_id=self.bus_id,
+                            device_id=self.device_id,
+                            status="Present"
+                        )
+                        if is_new:
+                            self._already_present_ids.add(sid)
+                            box_color = (0, 255, 0)  # Green
+                            status_text = f"PRESENT: {sname}"
+                            self.banner = (f"ATTENDANCE MARKED: {sname} ({sid})", now + 3.0, False)
+                            logger.info(f"Marked attendance for {sname} ({sid}) on {self.bus_id}")
+                            self.sync_worker.trigger_immediate_sync()
+                        else:
+                            self._already_present_ids.add(sid)
+                            box_color = (0, 255, 0)
+                            status_text = f"ALREADY PRESENT: {sname}"
+                    else:
+                        box_color = (0, 255, 255)  # Yellow for confirming
+                        status_text = f"CONFIRMING ({obs_count}/{self.required_confirmations}): {sname}"
 
             # Draw bounding box and label if not headless
             if not self.headless:
@@ -208,15 +282,17 @@ class AttendanceDeviceApp:
         telemetry = self.sync_worker.get_status_telemetry()
         stats = self.db.get_stats_for_today(self.bus_id)
 
-        # Top Bar: Bus info & Presence + Shortcut Keys
+        # Top Bar: Bus info, FPS, Resolution, Presence + Shortcut Keys
         cv2.rectangle(frame, (0, 0), (w, 42), (20, 24, 33), -1)
         top_txt = (
             f"BUS: {self.bus_id} | "
+            f"FPS: {self.fps:.1f} | "
+            f"RES: {self.det_size}p | "
             f"PRESENT: {stats['total_present']}/{stats['total_assigned']}"
         )
-        cv2.putText(frame, top_txt, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
-        ctrl_hint = "[C] Bus ID  [S] Cloud Keys  [Q] Exit"
-        cv2.putText(frame, ctrl_hint, (max(15, w - 370), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (180, 190, 205), 1)
+        cv2.putText(frame, top_txt, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
+        ctrl_hint = "[R] Res  [C] Bus ID  [S] Keys  [Q] Exit"
+        cv2.putText(frame, ctrl_hint, (max(15, w - 400), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (180, 190, 205), 1)
 
         # Bottom Bar: Cloud & Sync telemetry
         cv2.rectangle(frame, (0, h - 36), (w, h), (20, 24, 33), -1)
@@ -370,6 +446,70 @@ class AttendanceDeviceApp:
                 logger.warning(f"Cloud credentials permanently saved but test returned: {msg}")
             self.sync_worker.trigger_immediate_sync()
 
+    def prompt_change_resolution(self) -> None:
+        """Prompt administrator to change detection resolution and persist in SQLite."""
+        cur_res = self.det_size
+
+        if self.headless:
+            print("\n" + "=" * 60)
+            print("  CONFIGURE FACE DETECTION RESOLUTION")
+            print("=" * 60)
+            print(f"Current Resolution: {cur_res}x{cur_res}")
+            print("Options:")
+            print("  1. 320x320  (Fastest - Recommended for Raspberry Pi 4)")
+            print("  2. 480x480  (Balanced - Medium Speed)")
+            print("  3. 640x640  (High Detail - Heavy CPU)")
+            choice = input("Enter choice (1/2/3) or press Enter to keep current: ").strip()
+            if choice == "1":
+                new_val = 320
+            elif choice == "2":
+                new_val = 480
+            elif choice == "3":
+                new_val = 640
+            else:
+                return
+        else:
+            import tkinter as tk
+            from tkinter import simpledialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+
+            res_str = simpledialog.askstring(
+                "Face Detection Resolution",
+                f"Current Resolution: {cur_res}x{cur_res}\n\n"
+                "Enter detection resolution:\n"
+                " • 320  (Fastest - Recommended for Raspberry Pi 4)\n"
+                " • 480  (Balanced)\n"
+                " • 640  (High Detail / Desktop)\n",
+                initialvalue=str(cur_res),
+                parent=root
+            )
+            root.destroy()
+            if not res_str or not res_str.strip():
+                return
+            try:
+                new_val = int(res_str.strip())
+                if new_val not in (320, 480, 640):
+                    if new_val <= 360:
+                        new_val = 320
+                    elif new_val <= 540:
+                        new_val = 480
+                    else:
+                        new_val = 640
+            except ValueError:
+                return
+
+        if new_val == self.det_size:
+            return
+
+        self.det_size = new_val
+        self.db.set_config("det_size", str(self.det_size))
+        if self.face_recognizer:
+            self.face_recognizer.set_det_size((self.det_size, self.det_size))
+        self.banner = (f"RESOLUTION SAVED: {self.det_size}x{self.det_size}", time.time() + 4.0, False)
+        logger.info(f"Detection resolution changed and saved permanently: {self.det_size}x{self.det_size}")
+
     def run(self) -> None:
         """Main execution loop."""
         if not self.initialize():
@@ -377,15 +517,35 @@ class AttendanceDeviceApp:
             return
 
         window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
-        logger.info(f"Running device loop (Headless={self.headless}).")
-        logger.info("Controls: Press 'Q' to quit, Press 'C' to configure Bus ID, Press 'S' to configure Cloud Settings.")
+        logger.info(f"Running device loop (Headless={self.headless}, DetSize={self.det_size}x{self.det_size}).")
+        logger.info("Controls: Press 'Q' to quit, Press 'R' to change Resolution, Press 'C' to configure Bus ID, Press 'S' to configure Cloud Settings.")
 
         try:
             while True:
                 ret, frame = self.camera.read_frame() if self.camera else (False, None)
                 if not ret or frame is None:
-                    time.sleep(0.05)
+                    time.sleep(0.01)
                     continue
+
+                # Calculate smooth rolling FPS
+                now_t = time.perf_counter()
+                dt = now_t - self._last_frame_time
+                self._last_frame_time = now_t
+                if dt > 0:
+                    inst_fps = 1.0 / dt
+                    self.fps = (0.9 * self.fps + 0.1 * inst_fps) if self.fps > 0 else inst_fps
+                self._frame_count += 1
+
+                # Periodic health logging in headless mode (every 10s)
+                if self.headless and (time.time() - self._last_health_log) >= 10.0:
+                    self._last_health_log = time.time()
+                    stats = self.db.get_stats_for_today(self.bus_id)
+                    is_on = self.sync_worker.is_connected
+                    logger.info(
+                        f"[TELEMETRY] FPS: {self.fps:.1f} | Res: {self.det_size}x{self.det_size} | "
+                        f"Present: {stats['total_present']}/{stats['total_assigned']} | "
+                        f"Net: {'ONLINE' if is_on else 'OFFLINE'}"
+                    )
 
                 processed = self.process_frame(frame)
 
@@ -395,13 +555,16 @@ class AttendanceDeviceApp:
                     if key in (ord('q'), ord('Q')):
                         logger.info("User requested exit ('Q' pressed).")
                         break
+                    elif key in (ord('r'), ord('R')):
+                        self.prompt_change_resolution()
+                        window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
                     elif key in (ord('c'), ord('C')):
                         self.prompt_reconfigure_device()
                         window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
                     elif key in (ord('s'), ord('S')):
                         self.prompt_configure_credentials()
                 else:
-                    time.sleep(0.01)
+                    time.sleep(0.005)
 
         except KeyboardInterrupt:
             logger.info("Interrupted by user (Ctrl+C).")
@@ -425,6 +588,7 @@ def main() -> None:
     parser.add_argument("--bus-id", type=str, default="Bus01", help="Assigned Bus ID (e.g. Bus01)")
     parser.add_argument("--device-id", type=str, default=None, help="Hardware Device ID")
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index (default: 0)")
+    parser.add_argument("--det-size", type=int, default=None, choices=[320, 480, 640], help="Detection input resolution (320, 480, or 640)")
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run without GUI/OpenCV display (Raspberry Pi)")
     parser.add_argument("--configure-cloud", action="store_true", help="Open cloud credentials editor before starting")
@@ -435,7 +599,8 @@ def main() -> None:
         device_id=args.device_id,
         db_path=args.db_path,
         camera_index=args.camera_index,
-        headless=args.headless
+        headless=args.headless,
+        det_size=args.det_size
     )
     if args.configure_cloud:
         app.prompt_configure_credentials()
