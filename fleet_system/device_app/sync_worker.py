@@ -187,3 +187,9 @@ class DeviceSyncWorker:
                 "active_students": self.active_students_count,
                 "last_error": self.last_error
             }
+
+    @property
+    def is_connected(self) -> bool:
+        """Alias for is_online."""
+        with self._lock:
+            return self.is_online

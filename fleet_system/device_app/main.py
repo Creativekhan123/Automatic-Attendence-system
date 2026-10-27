@@ -77,7 +77,7 @@ class AttendanceDeviceApp:
         # Load persistent detection resolution (default 320 for Raspberry Pi 4 optimal speed)
         saved_det_size = self.db.get_config("det_size", "320")
         if det_size is not None:
-            self.det_size = int(det_size)
+            self.det_size = det_size
             self.db.set_config("det_size", str(self.det_size))
         else:
             try:
@@ -540,7 +540,7 @@ class AttendanceDeviceApp:
                 if self.headless and (time.time() - self._last_health_log) >= 10.0:
                     self._last_health_log = time.time()
                     stats = self.db.get_stats_for_today(self.bus_id)
-                    is_on = self.sync_worker.is_connected
+                    is_on = self.sync_worker.is_online
                     logger.info(
                         f"[TELEMETRY] FPS: {self.fps:.1f} | Res: {self.det_size}x{self.det_size} | "
                         f"Present: {stats['total_present']}/{stats['total_assigned']} | "
