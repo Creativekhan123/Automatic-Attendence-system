@@ -32,8 +32,16 @@ class Camera:
         Returns:
             True if camera opened successfully, False otherwise.
         """
-        # On Windows, cv2.CAP_DSHOW can provide faster init, but default fallback is safe
-        self._cap = cv2.VideoCapture(self.camera_index)
+        import sys
+
+        # On Windows, use DirectShow (CAP_DSHOW) to avoid buggy MSMF stream negotiation (-1072873822)
+        if sys.platform == "win32":
+            self._cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+            if not self.is_opened():
+                self._cap = cv2.VideoCapture(self.camera_index)
+        else:
+            self._cap = cv2.VideoCapture(self.camera_index)
+
         if not self.is_opened():
             return False
 
@@ -41,8 +49,10 @@ class Camera:
         try:
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # Only set FOURCC on Linux (V4L2) where MJPG hardware decompression is supported
+            if sys.platform != "win32":
+                self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         except Exception:
             pass
 
@@ -60,18 +70,22 @@ class Camera:
 
     def _capture_worker(self) -> None:
         """Continuously pulls frames into the atomic buffer to eliminate backlog lag."""
+        fail_count = 0
         while self._running:
             if self._cap is None or not self._cap.isOpened():
-                time.sleep(0.02)
+                time.sleep(0.1)
                 continue
 
             ret, frame = self._cap.read()
             if ret and frame is not None:
+                fail_count = 0
                 with self._lock:
                     self._latest_frame = frame
                     self._has_frame = True
             else:
-                time.sleep(0.01)
+                fail_count += 1
+                # Back off when frames are not arriving to avoid CPU spin & driver warning flood
+                time.sleep(0.05 if fail_count < 5 else 0.2)
 
     def is_opened(self) -> bool:
         """Check if camera is currently opened."""
