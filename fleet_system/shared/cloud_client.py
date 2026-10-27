@@ -41,8 +41,8 @@ else:
     load_dotenv()
 
 # Built-in credentials embedded into the application binary so it works out-of-the-box on any desktop
-_EMBEDDED_DEFAULT_URL = "https://iqxvzpcrzjkmninoofem.supabase.co"
-_EMBEDDED_DEFAULT_KEY = "sb_publishable_1-EgL38pVxCRx9MDq0OtrQ_0E_z4LwB"
+_EMBEDDED_DEFAULT_URL = "https://ibowhhonlxzsikgijwnl.supabase.co"
+_EMBEDDED_DEFAULT_KEY = "sb_publishable_KL45K5cqhbCWHaZ_9GmTAA_g62FEdRW"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/") or _EMBEDDED_DEFAULT_URL
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip() or _EMBEDDED_DEFAULT_KEY
@@ -125,7 +125,7 @@ class FleetCloudClient:
         self.fleet_token = fleet_token or FLEET_SYNC_TOKEN
         self.timeout = timeout
         self.session = requests.Session()
-        from urllib3.util.retry import Retry
+        from urllib3.util import Retry
         from requests.adapters import HTTPAdapter
         retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
         adapter = HTTPAdapter(max_retries=retries)

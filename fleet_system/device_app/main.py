@@ -46,8 +46,7 @@ class AttendanceDeviceApp:
         headless: bool = False,
         similarity_threshold: float = 0.50,
         required_confirmations: int = 3,
-        confirmation_window: float = 2.0,
-        det_size: int = 640
+        confirmation_window: float = 2.0
     ) -> None:
         self.db_path = db_path
         self.camera_index = camera_index
@@ -55,7 +54,6 @@ class AttendanceDeviceApp:
         self.similarity_threshold = similarity_threshold
         self.required_confirmations = required_confirmations
         self.confirmation_window = confirmation_window
-        self.det_size = det_size
 
         # Initialize local storage
         self.db = DeviceDatabase(db_path=self.db_path)
@@ -107,10 +105,9 @@ class AttendanceDeviceApp:
 
         # 2. Load FaceRecognizer model
         try:
-            logger.info(f"Loading InsightFace buffalo_sc model pack (det_size: {self.det_size}x{self.det_size})...")
+            logger.info("Loading InsightFace buffalo_sc model pack...")
             self.face_recognizer = FaceRecognizer(
                 model_name="buffalo_sc",
-                det_size=(self.det_size, self.det_size),
                 similarity_threshold=self.similarity_threshold
             )
         except Exception as e:
@@ -428,7 +425,6 @@ def main() -> None:
     parser.add_argument("--bus-id", type=str, default="Bus01", help="Assigned Bus ID (e.g. Bus01)")
     parser.add_argument("--device-id", type=str, default=None, help="Hardware Device ID")
     parser.add_argument("--camera-index", type=int, default=0, help="Camera index (default: 0)")
-    parser.add_argument("--det-size", type=int, default=640, help="Face detection input resolution (default: 640)")
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run without GUI/OpenCV display (Raspberry Pi)")
     parser.add_argument("--configure-cloud", action="store_true", help="Open cloud credentials editor before starting")
@@ -439,8 +435,7 @@ def main() -> None:
         device_id=args.device_id,
         db_path=args.db_path,
         camera_index=args.camera_index,
-        headless=args.headless,
-        det_size=args.det_size
+        headless=args.headless
     )
     if args.configure_cloud:
         app.prompt_configure_credentials()

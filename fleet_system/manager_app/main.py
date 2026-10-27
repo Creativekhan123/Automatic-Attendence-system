@@ -10,7 +10,6 @@ Built with CustomTkinter:
 """
 import os
 import sys
-import re
 import time
 import csv
 import threading
@@ -91,12 +90,8 @@ class AttendanceManagerApp(ctk.CTk):
         self.geometry("1180x760")
         self.minsize(1050, 680)
 
-        self.local_device_db = DeviceDatabase("fleet_system/device_app/data/device.db")
         self.cloud = FleetCloudClient()
-        saved_url = self.local_device_db.get_config("supabase_url", "")
-        saved_key = self.local_device_db.get_config("supabase_key", "")
-        if saved_url and saved_key:
-            self.cloud.reconfigure(saved_url, saved_key)
+        self.local_device_db = DeviceDatabase("fleet_system/device_app/data/device.db")
 
         # Cache data
         self.buses: List[Dict[str, Any]] = []
@@ -1985,12 +1980,8 @@ class AttendanceManagerApp(ctk.CTk):
         self.kpi_card_absent.configure(text=str(unmarked_count))
         self.kpi_card_buses.configure(text=str(len(sorted_buses)))
 
-        url, _ = self.cloud.get_current_credentials()
-        match = re.search(r"https://([a-zA-Z0-9_-]+)\.supabase\.co", url)
-        proj_ref = (match.group(1)[:8] + "..") if match else "Cloud"
-
         self.status_lbl.configure(
-            text=f"✔ {proj_ref} | {time.strftime('%H:%M:%S')}",
+            text=f"✔ Connected | {time.strftime('%H:%M:%S')}",
             text_color="#10b981"
         )
         self.render_attendance_table(self.attendance_records)
@@ -2225,16 +2216,10 @@ class AttendanceManagerApp(ctk.CTk):
             messagebox.showerror("Clipboard Error", f"Failed to copy SQL to clipboard:\n{e}")
 
     def open_supabase_in_browser(self) -> None:
-        """Open Supabase dashboard directly to active project editor."""
+        """Open Supabase dashboard in default web browser."""
         import webbrowser
         try:
-            url, _ = self.cloud.get_current_credentials()
-            match = re.search(r"https://([a-zA-Z0-9_-]+)\.supabase\.co", url)
-            if match:
-                ref = match.group(1)
-                webbrowser.open(f"https://supabase.com/dashboard/project/{ref}/editor")
-            else:
-                webbrowser.open("https://supabase.com/dashboard")
+            webbrowser.open("https://supabase.com/dashboard")
         except Exception as e:
             messagebox.showerror("Browser Error", f"Could not open browser:\n{e}")
 
@@ -2286,8 +2271,6 @@ class AttendanceManagerApp(ctk.CTk):
 
         ok = save_cloud_credentials(url, key)
         self.cloud.reconfigure(url, key)
-        self.local_device_db.set_config("supabase_url", url)
-        self.local_device_db.set_config("supabase_key", key)
         if ok:
             messagebox.showinfo("Saved", "Cloud credentials saved to .env and applied successfully!")
         else:
@@ -2304,8 +2287,6 @@ class AttendanceManagerApp(ctk.CTk):
             return
 
         url, key = self.cloud.reset_to_defaults()
-        self.local_device_db.set_config("supabase_url", url)
-        self.local_device_db.set_config("supabase_key", key)
         self.cfg_url_entry.delete(0, "end")
         self.cfg_url_entry.insert(0, url)
         self.cfg_key_entry.delete(0, "end")

@@ -29,8 +29,8 @@ _env_db = os.environ.get("DATABASE_PATH", "").strip()
 DEFAULT_DB_PATH: str = _env_db if _env_db else os.path.join(_PROJECT_ROOT, "data", "attendance.db")
 
 # Supabase Cloud Configuration
-_EMBEDDED_DEFAULT_URL = "https://iqxvzpcrzjkmninoofem.supabase.co"
-_EMBEDDED_DEFAULT_KEY = "sb_publishable_1-EgL38pVxCRx9MDq0OtrQ_0E_z4LwB"
+_EMBEDDED_DEFAULT_URL = "https://ibowhhonlxzsikgijwnl.supabase.co"
+_EMBEDDED_DEFAULT_KEY = "sb_publishable_KL45K5cqhbCWHaZ_9GmTAA_g62FEdRW"
 
 SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "").strip() or _EMBEDDED_DEFAULT_URL
 SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "").strip() or _EMBEDDED_DEFAULT_KEY
