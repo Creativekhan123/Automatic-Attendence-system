@@ -47,11 +47,9 @@ class AttendanceDeviceApp:
         camera_index: int = 0,
         headless: bool = False,
         similarity_threshold: float = 0.50,
-        required_confirmations: int = 1,
-        confirmation_window: float = 2.5,
-        det_size: Optional[int] = None,
-        clear_cache: bool = False,
-        ai_interval: float = 0.03
+        required_confirmations: int = 3,
+        confirmation_window: float = 2.0,
+        det_size: Optional[int] = None
     ) -> None:
         self.db_path = db_path
         self.camera_index = camera_index
@@ -59,7 +57,6 @@ class AttendanceDeviceApp:
         self.similarity_threshold = similarity_threshold
         self.required_confirmations = required_confirmations
         self.confirmation_window = confirmation_window
-        self.ai_interval: float = ai_interval
 
         # Initialize local storage
         self.db = DeviceDatabase(db_path=self.db_path)
@@ -76,11 +73,6 @@ class AttendanceDeviceApp:
 
         # Device ID is always identical to Bus ID
         self.device_id = self.bus_id
-
-        # If clear_cache is requested, purge local student roster immediately
-        if clear_cache:
-            deleted = self.db.clear_students_cache(self.bus_id)
-            logger.info(f"Local student roster cache purged on startup (--clear-cache): {deleted} record(s).")
         self.db.set_config("device_id", self.device_id)
 
         # Load persistent detection resolution (default 320 for Raspberry Pi 4 optimal speed)
@@ -137,6 +129,7 @@ class AttendanceDeviceApp:
         self._latest_ai_input_frame: Optional[np.ndarray] = None
         self._current_detections: List[Dict[str, Any]] = []
         self._last_ai_time: float = 0.0
+        self.ai_interval: float = 0.15  # Runs AI ~6 times/sec, leaving CPU headroom
         self.ai_fps: float = 0.0
 
     def initialize(self) -> bool:
@@ -364,7 +357,7 @@ class AttendanceDeviceApp:
             f"PRESENT: {stats['total_present']}/{stats['total_assigned']}"
         )
         cv2.putText(frame, top_txt, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
-        ctrl_hint = "[R] Res  [C] Bus  [F] Flush  [S] Keys  [Q] Exit"
+        ctrl_hint = "[F] Fresh Sync  [R] Res  [C] Bus ID  [S] Keys  [Q] Exit"
         cv2.putText(frame, ctrl_hint, (max(15, w - 460), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (180, 190, 205), 1)
 
         # Bottom Bar: Cloud & Sync telemetry
@@ -391,14 +384,6 @@ class AttendanceDeviceApp:
                 (255, 255, 255),
                 2
             )
-
-    def flush_cache_and_resync(self) -> None:
-        """Purge local student roster cache and immediately trigger fresh pull from Supabase."""
-        deleted = self.db.clear_students_cache(self.bus_id)
-        self._refresh_roster_cache(force=True)
-        self.sync_worker.trigger_immediate_sync()
-        self.banner = (f"CACHE PURGED ({deleted} cleared) - SYNCING...", time.time() + 4.0, False)
-        logger.info(f"Manual cache flush requested. Purged {deleted} local student(s). Re-syncing from Supabase...")
 
     def prompt_reconfigure_device(self) -> None:
         """Prompt administrator in a safe Tkinter popup to change Bus ID with confirmation."""
@@ -591,6 +576,33 @@ class AttendanceDeviceApp:
         self.banner = (f"RESOLUTION SAVED: {self.det_size}x{self.det_size}", time.time() + 4.0, False)
         logger.info(f"Detection resolution changed and saved permanently: {self.det_size}x{self.det_size}")
 
+    def force_refresh_from_cloud(self) -> None:
+        """Clear local data and fetch fresh roster and attendance from Supabase."""
+        logger.info("Key [F] pressed: Initiating full local cache wipe and fresh cloud sync...")
+        self.banner = ("CLEARING LOCAL DATA & FETCHING FROM SUPABASE...", time.time() + 10.0, False)
+
+        def _do_sync():
+            try:
+                ok, msg = self.sync_worker.force_resync()
+                if ok:
+                    self._refresh_roster_cache(force=True)
+                    self.confirmation_tracker.clear()
+                    stats = self.db.get_stats_for_today(self.bus_id)
+                    self.banner = (
+                        f"SYNC OK: {stats['total_assigned']} STUDENTS LOADED",
+                        time.time() + 4.0,
+                        False
+                    )
+                    logger.info(f"Fresh sync complete: {msg}")
+                else:
+                    self.banner = (f"SYNC FAILED: {msg}", time.time() + 5.0, True)
+                    logger.error(f"Fresh sync failed: {msg}")
+            except Exception as e:
+                self.banner = (f"SYNC ERROR: {e}", time.time() + 5.0, True)
+                logger.error(f"Fresh sync exception: {e}")
+
+        threading.Thread(target=_do_sync, daemon=True).start()
+
     def run(self) -> None:
         """Main execution loop."""
         if not self.initialize():
@@ -599,7 +611,7 @@ class AttendanceDeviceApp:
 
         window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
         logger.info(f"Running device loop (Headless={self.headless}, DetSize={self.det_size}x{self.det_size}).")
-        logger.info("Controls: Press 'Q' to quit, Press 'R' to change Resolution, Press 'C' to configure Bus ID, Press 'S' to configure Cloud Settings.")
+        logger.info("Controls: Press 'Q' to quit, Press 'F' to clear & re-fetch from cloud, Press 'R' to change Resolution, Press 'C' to configure Bus ID, Press 'S' to configure Cloud Settings.")
 
         try:
             while True:
@@ -636,14 +648,13 @@ class AttendanceDeviceApp:
                     if key in (ord('q'), ord('Q')):
                         logger.info("User requested exit ('Q' pressed).")
                         break
+                    elif key in (ord('f'), ord('F')):
+                        self.force_refresh_from_cloud()
                     elif key in (ord('r'), ord('R')):
                         self.prompt_change_resolution()
                         window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
                     elif key in (ord('c'), ord('C')):
                         self.prompt_reconfigure_device()
-                        window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
-                    elif key in (ord('f'), ord('F')):
-                        self.flush_cache_and_resync()
                         window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
                     elif key in (ord('s'), ord('S')):
                         self.prompt_configure_credentials()
@@ -678,9 +689,6 @@ def main() -> None:
     parser.add_argument("--det-size", type=int, default=None, choices=[320, 480, 640], help="Detection input resolution (320, 480, or 640)")
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run without GUI/OpenCV display (Raspberry Pi)")
-    parser.add_argument("--clear-cache", action="store_true", help="Purge local student roster cache on startup and pull fresh from Supabase cloud")
-    parser.add_argument("--confirmations", type=int, default=1, choices=[1, 2, 3], help="Number of consecutive matches before marking attendance (default: 1)")
-    parser.add_argument("--window", type=float, default=2.5, help="Confirmation window in seconds (default: 2.5s for Raspberry Pi compatibility)")
     parser.add_argument("--configure-cloud", action="store_true", help="Open cloud credentials editor before starting")
     args = parser.parse_args()
 
@@ -690,10 +698,7 @@ def main() -> None:
         db_path=args.db_path,
         camera_index=args.camera_index,
         headless=args.headless,
-        det_size=args.det_size,
-        clear_cache=args.clear_cache,
-        required_confirmations=args.confirmations,
-        confirmation_window=args.window
+        det_size=args.det_size
     )
     if args.configure_cloud:
         app.prompt_configure_credentials()

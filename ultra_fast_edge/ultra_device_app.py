@@ -46,11 +46,7 @@ class UltraAttendanceApp:
         camera_index: int = 0,
         det_size: int = 320,
         engine: str = "hybrid",
-        headless: bool = False,
-        clear_cache: bool = False,
-        required_confirmations: int = 1,
-        confirmation_window: float = 2.5,
-        ai_interval: float = 0.03
+        headless: bool = False
     ) -> None:
         self.bus_id = bus_id
         self.device_id = device_id or bus_id
@@ -59,14 +55,8 @@ class UltraAttendanceApp:
         self.det_size = det_size
         self.engine = engine.lower()
         self.headless = headless
-        self.required_confirmations = required_confirmations
-        self.confirmation_window = confirmation_window
-        self.ai_interval = ai_interval
 
         self.db = DeviceDatabase(self.db_path)
-        if clear_cache:
-            deleted = self.db.clear_students_cache(self.bus_id)
-            logger.info(f"Local student roster cache purged on startup (--clear-cache): {deleted} record(s).")
         self.sync_worker = DeviceSyncWorker(db=self.db, bus_id=self.bus_id, interval_seconds=5.0)
 
         # Restore persisted configs if available
@@ -98,6 +88,8 @@ class UltraAttendanceApp:
 
         # Attendance tracking
         self.confirmation_tracker: Dict[int, List[float]] = {}
+        self.confirmation_window: float = 2.0
+        self.required_confirmations: int = 3
 
         # Cached roster matrix for instant vector dot-product matching (<0.05ms)
         self._roster_cache: List[Dict[str, Any]] = []
@@ -119,6 +111,7 @@ class UltraAttendanceApp:
         self._latest_ai_input_frame: Optional[np.ndarray] = None
         self._current_detections: List[Dict[str, Any]] = []
         self._last_ai_time: float = 0.0
+        self.ai_interval: float = 0.12  # Runs AI ~8 times/sec, leaving Pi CPU cool
 
     def initialize(self) -> bool:
         """Start database, models, sync worker, and camera."""
@@ -340,8 +333,8 @@ class UltraAttendanceApp:
             f"PRESENT: {stats['total_present']}/{stats['total_assigned']}"
         )
         cv2.putText(frame, top_txt, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
-        ctrl_hint = "[F] Flush Cache  [Q] Exit"
-        cv2.putText(frame, ctrl_hint, (max(15, w - 260), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (180, 190, 205), 1)
+        ctrl_hint = "[F] Fresh Sync  [C] Bus  [Q] Exit"
+        cv2.putText(frame, ctrl_hint, (max(15, w - 380), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (180, 190, 205), 1)
 
         # Bottom Bar: Cloud status & pending events
         cv2.rectangle(frame, (0, h - 36), (w, h), (20, 24, 33), -1)
@@ -368,13 +361,32 @@ class UltraAttendanceApp:
                 2
             )
 
-    def flush_cache_and_resync(self) -> None:
-        """Purge local student roster cache and immediately trigger fresh sync from Supabase."""
-        deleted = self.db.clear_students_cache(self.bus_id)
-        self._refresh_roster_cache(force=True)
-        self.sync_worker.trigger_immediate_sync()
-        self.banner = (f"CACHE PURGED ({deleted} cleared) - SYNCING...", time.time() + 4.0, False)
-        logger.info(f"Manual cache flush requested. Purged {deleted} local student(s). Re-syncing from Supabase...")
+    def force_refresh_from_cloud(self) -> None:
+        """Clear local data and fetch fresh roster and attendance from Supabase."""
+        logger.info("Key [F] pressed: Initiating full local cache wipe and fresh cloud sync...")
+        self.banner = ("CLEARING LOCAL DATA & FETCHING FROM SUPABASE...", time.time() + 10.0, False)
+
+        def _do_sync():
+            try:
+                ok, msg = self.sync_worker.force_resync()
+                if ok:
+                    self._refresh_roster_cache(force=True)
+                    self.confirmation_tracker.clear()
+                    stats = self.db.get_stats_for_today(self.bus_id)
+                    self.banner = (
+                        f"SYNC OK: {stats['total_assigned']} STUDENTS LOADED",
+                        time.time() + 4.0,
+                        False
+                    )
+                    logger.info(f"Fresh sync complete: {msg}")
+                else:
+                    self.banner = (f"SYNC FAILED: {msg}", time.time() + 5.0, True)
+                    logger.error(f"Fresh sync failed: {msg}")
+            except Exception as e:
+                self.banner = (f"SYNC ERROR: {e}", time.time() + 5.0, True)
+                logger.error(f"Fresh sync exception: {e}")
+
+        threading.Thread(target=_do_sync, daemon=True).start()
 
     def run(self) -> None:
         """Main camera execution loop."""
@@ -384,6 +396,7 @@ class UltraAttendanceApp:
 
         window_name = f"Ultra-Fast Attendance - {self.bus_id} (YuNet Edge)"
         logger.info(f"Running Ultra Edge loop (Engine={self.engine}, Headless={self.headless}).")
+        logger.info("Controls: Press 'Q' to quit, Press 'F' to clear local data & fetch from cloud.")
 
         try:
             while True:
@@ -418,7 +431,7 @@ class UltraAttendanceApp:
                         logger.info("User requested exit ('Q' pressed).")
                         break
                     elif key in (ord('f'), ord('F')):
-                        self.flush_cache_and_resync()
+                        self.force_refresh_from_cloud()
                 else:
                     time.sleep(0.005)
 
@@ -452,9 +465,6 @@ def main() -> None:
                         help="Engine: 'hybrid' (YuNet + MobileFaceNet, compatible with existing DB) or 'sface' (Pure OpenCV)")
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run in headless terminal mode")
-    parser.add_argument("--clear-cache", action="store_true", help="Purge local student roster cache on startup and pull fresh from Supabase cloud")
-    parser.add_argument("--confirmations", type=int, default=1, choices=[1, 2, 3], help="Number of consecutive matches before marking attendance (default: 1)")
-    parser.add_argument("--window", type=float, default=2.5, help="Confirmation window in seconds (default: 2.5s for Raspberry Pi compatibility)")
     args = parser.parse_args()
 
     app = UltraAttendanceApp(
@@ -464,10 +474,7 @@ def main() -> None:
         camera_index=args.camera_index,
         det_size=args.det_size,
         engine=args.engine,
-        headless=args.headless,
-        clear_cache=args.clear_cache,
-        required_confirmations=args.confirmations,
-        confirmation_window=args.window
+        headless=args.headless
     )
     app.run()
 

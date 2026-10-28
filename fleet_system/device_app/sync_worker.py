@@ -8,7 +8,7 @@ Continuously runs in background thread:
 import time
 import threading
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 from fleet_system.device_app.local_db import DeviceDatabase
 from fleet_system.shared.cloud_client import FleetCloudClient
@@ -135,11 +135,11 @@ class DeviceSyncWorker:
         except Exception as e:
             logger.debug(f"ensure_bus check error: {e}")
 
-        # 2. Pull roster updates (Download assigned students for this bus and reconcile deletions)
+        # 2. Pull roster updates (Download assigned students for this bus)
         try:
-            ok, cloud_students = self.cloud.get_students_with_status(bus_id=self.bus_id, active_only=False)
-            if ok:
-                active_sids = [str(s["student_id"]).strip() for s in cloud_students if s.get("is_active", True)]
+            cloud_students = self.cloud.get_students(bus_id=self.bus_id, active_only=False)
+            if cloud_students:
+                active_sids = [s["student_id"] for s in cloud_students if s.get("is_active", True)]
                 # Check which students lack biometric vectors locally
                 missing_sids = self.db.get_missing_biometric_student_ids()
                 fetch_sids = list(set(active_sids + missing_sids))
@@ -148,11 +148,7 @@ class DeviceSyncWorker:
                 if fetch_sids:
                     cloud_biometrics = self.cloud.get_biometrics_for_students(fetch_sids)
 
-                total_active = self.db.sync_roster_cache(
-                    cloud_students=cloud_students,
-                    cloud_biometrics=cloud_biometrics,
-                    bus_id=self.bus_id
-                )
+                total_active = self.db.sync_roster_cache(cloud_students, cloud_biometrics)
                 with self._lock:
                     self.active_students_count = total_active
         except Exception as e:
@@ -197,3 +193,64 @@ class DeviceSyncWorker:
         """Alias for is_online."""
         with self._lock:
             return self.is_online
+
+    def force_resync(self) -> Tuple[bool, str]:
+        """Force flush local caches and re-fetch everything fresh from Supabase.
+        
+        1. Uploads any existing pending local attendance (so no marks are lost).
+        2. Clears local SQLite roster cache and attendance.
+        3. Fetches fresh student profiles & biometric embeddings from Supabase.
+        4. Fetches today's attendance for this bus from Supabase and populates local table.
+        """
+        if not self.cloud.is_configured():
+            return False, "Cloud credentials not configured."
+
+        conn_ok, conn_msg = self.cloud.test_connection()
+        if not conn_ok:
+            return False, f"Cloud offline ({conn_msg})"
+
+        # 1. Flush any pending local attendance before wiping
+        try:
+            pending = self.db.get_pending_attendance(limit=100)
+            if pending:
+                synced_ids, _ = self.cloud.upload_attendance_batch(pending)
+                if synced_ids:
+                    self.db.mark_attendance_synced(synced_ids)
+        except Exception as e:
+            logger.warning(f"Error flushing pending before fresh sync: {e}")
+
+        # 2. Clear local cache
+        cleared_info = self.db.clear_local_cache(clear_attendance=True)
+        logger.info(f"Local cache cleared: {cleared_info}")
+
+        # 3. Pull fresh students & biometrics from Supabase
+        try:
+            cloud_students = self.cloud.get_students(bus_id=self.bus_id, active_only=False)
+            cloud_biometrics: Dict[str, bytes] = {}
+            if cloud_students:
+                sids = [s["student_id"] for s in cloud_students if s.get("is_active", True)]
+                if sids:
+                    cloud_biometrics = self.cloud.get_biometrics_for_students(sids)
+
+            total_active = self.db.sync_roster_cache(cloud_students or [], cloud_biometrics)
+            with self._lock:
+                self.active_students_count = total_active
+        except Exception as e:
+            return False, f"Failed pulling roster: {e}"
+
+        # 4. Pull today's attendance records from Supabase
+        att_synced = 0
+        try:
+            today_str = time.strftime("%Y-%m-%d")
+            cloud_att = self.cloud.get_attendance(date_str=today_str, bus_id=self.bus_id)
+            if cloud_att:
+                att_synced = self.db.sync_cloud_attendance_records(cloud_att)
+        except Exception as e:
+            logger.warning(f"Failed pulling today's attendance from cloud: {e}")
+
+        with self._lock:
+            self.is_online = True
+            self.last_sync_time = time.strftime("%H:%M:%S")
+            self.pending_count = len(self.db.get_pending_attendance(limit=50))
+
+        return True, f"Loaded {total_active} students & {att_synced} attendance records"

@@ -113,6 +113,15 @@ class AttendanceManagerApp(ctk.CTk):
         self.show_page("live_attendance")
         self.refresh_all_data()
 
+        # Global 'F' keybinding to clear local cache & fetch fresh data from Supabase
+        def _on_f_pressed(event):
+            widget_name = event.widget.__class__.__name__ if hasattr(event, "widget") else ""
+            if "Entry" not in widget_name and "Text" not in widget_name:
+                self.refresh_all_data()
+
+        self.bind("<Key-F>", _on_f_pressed)
+        self.bind("<Key-f>", _on_f_pressed)
+
     def get_face_recognizer(self):
         """Lazy load FaceRecognizer once for fast in-app registration."""
         if self._recognizer is None:
