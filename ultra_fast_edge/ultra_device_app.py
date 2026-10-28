@@ -46,7 +46,8 @@ class UltraAttendanceApp:
         camera_index: int = 0,
         det_size: int = 320,
         engine: str = "hybrid",
-        headless: bool = False
+        headless: bool = False,
+        clear_cache: bool = False
     ) -> None:
         self.bus_id = bus_id
         self.device_id = device_id or bus_id
@@ -57,6 +58,9 @@ class UltraAttendanceApp:
         self.headless = headless
 
         self.db = DeviceDatabase(self.db_path)
+        if clear_cache:
+            deleted = self.db.clear_students_cache(self.bus_id)
+            logger.info(f"Local student roster cache purged on startup (--clear-cache): {deleted} record(s).")
         self.sync_worker = DeviceSyncWorker(db=self.db, bus_id=self.bus_id, interval_seconds=5.0)
 
         # Restore persisted configs if available
@@ -333,8 +337,8 @@ class UltraAttendanceApp:
             f"PRESENT: {stats['total_present']}/{stats['total_assigned']}"
         )
         cv2.putText(frame, top_txt, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
-        ctrl_hint = "[C] Bus ID  [S] Cloud  [Q] Exit"
-        cv2.putText(frame, ctrl_hint, (max(15, w - 300), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (180, 190, 205), 1)
+        ctrl_hint = "[F] Flush Cache  [Q] Exit"
+        cv2.putText(frame, ctrl_hint, (max(15, w - 260), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (180, 190, 205), 1)
 
         # Bottom Bar: Cloud status & pending events
         cv2.rectangle(frame, (0, h - 36), (w, h), (20, 24, 33), -1)
@@ -360,6 +364,14 @@ class UltraAttendanceApp:
                 (255, 255, 255),
                 2
             )
+
+    def flush_cache_and_resync(self) -> None:
+        """Purge local student roster cache and immediately trigger fresh sync from Supabase."""
+        deleted = self.db.clear_students_cache(self.bus_id)
+        self._refresh_roster_cache(force=True)
+        self.sync_worker.trigger_immediate_sync()
+        self.banner = (f"CACHE PURGED ({deleted} cleared) - SYNCING...", time.time() + 4.0, False)
+        logger.info(f"Manual cache flush requested. Purged {deleted} local student(s). Re-syncing from Supabase...")
 
     def run(self) -> None:
         """Main camera execution loop."""
@@ -402,6 +414,8 @@ class UltraAttendanceApp:
                     if key in (ord('q'), ord('Q')):
                         logger.info("User requested exit ('Q' pressed).")
                         break
+                    elif key in (ord('f'), ord('F')):
+                        self.flush_cache_and_resync()
                 else:
                     time.sleep(0.005)
 
@@ -435,6 +449,7 @@ def main() -> None:
                         help="Engine: 'hybrid' (YuNet + MobileFaceNet, compatible with existing DB) or 'sface' (Pure OpenCV)")
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run in headless terminal mode")
+    parser.add_argument("--clear-cache", action="store_true", help="Purge local student roster cache on startup and pull fresh from Supabase cloud")
     args = parser.parse_args()
 
     app = UltraAttendanceApp(
@@ -444,7 +459,8 @@ def main() -> None:
         camera_index=args.camera_index,
         det_size=args.det_size,
         engine=args.engine,
-        headless=args.headless
+        headless=args.headless,
+        clear_cache=args.clear_cache
     )
     app.run()
 

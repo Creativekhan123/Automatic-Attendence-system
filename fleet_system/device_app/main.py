@@ -49,7 +49,8 @@ class AttendanceDeviceApp:
         similarity_threshold: float = 0.50,
         required_confirmations: int = 2,
         confirmation_window: float = 0.5,
-        det_size: Optional[int] = None
+        det_size: Optional[int] = None,
+        clear_cache: bool = False
     ) -> None:
         self.db_path = db_path
         self.camera_index = camera_index
@@ -73,6 +74,11 @@ class AttendanceDeviceApp:
 
         # Device ID is always identical to Bus ID
         self.device_id = self.bus_id
+
+        # If clear_cache is requested, purge local student roster immediately
+        if clear_cache:
+            deleted = self.db.clear_students_cache(self.bus_id)
+            logger.info(f"Local student roster cache purged on startup (--clear-cache): {deleted} record(s).")
         self.db.set_config("device_id", self.device_id)
 
         # Load persistent detection resolution (default 320 for Raspberry Pi 4 optimal speed)
@@ -357,8 +363,8 @@ class AttendanceDeviceApp:
             f"PRESENT: {stats['total_present']}/{stats['total_assigned']}"
         )
         cv2.putText(frame, top_txt, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
-        ctrl_hint = "[R] Res  [C] Bus ID  [S] Keys  [Q] Exit"
-        cv2.putText(frame, ctrl_hint, (max(15, w - 400), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (180, 190, 205), 1)
+        ctrl_hint = "[R] Res  [C] Bus  [F] Flush  [S] Keys  [Q] Exit"
+        cv2.putText(frame, ctrl_hint, (max(15, w - 460), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (180, 190, 205), 1)
 
         # Bottom Bar: Cloud & Sync telemetry
         cv2.rectangle(frame, (0, h - 36), (w, h), (20, 24, 33), -1)
@@ -384,6 +390,14 @@ class AttendanceDeviceApp:
                 (255, 255, 255),
                 2
             )
+
+    def flush_cache_and_resync(self) -> None:
+        """Purge local student roster cache and immediately trigger fresh pull from Supabase."""
+        deleted = self.db.clear_students_cache(self.bus_id)
+        self._refresh_roster_cache(force=True)
+        self.sync_worker.trigger_immediate_sync()
+        self.banner = (f"CACHE PURGED ({deleted} cleared) - SYNCING...", time.time() + 4.0, False)
+        logger.info(f"Manual cache flush requested. Purged {deleted} local student(s). Re-syncing from Supabase...")
 
     def prompt_reconfigure_device(self) -> None:
         """Prompt administrator in a safe Tkinter popup to change Bus ID with confirmation."""
@@ -627,6 +641,9 @@ class AttendanceDeviceApp:
                     elif key in (ord('c'), ord('C')):
                         self.prompt_reconfigure_device()
                         window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
+                    elif key in (ord('f'), ord('F')):
+                        self.flush_cache_and_resync()
+                        window_name = f"Fleet Attendance Device - {self.bus_id} (Cam {self.camera_index})"
                     elif key in (ord('s'), ord('S')):
                         self.prompt_configure_credentials()
                 else:
@@ -660,6 +677,7 @@ def main() -> None:
     parser.add_argument("--det-size", type=int, default=None, choices=[320, 480, 640], help="Detection input resolution (320, 480, or 640)")
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run without GUI/OpenCV display (Raspberry Pi)")
+    parser.add_argument("--clear-cache", action="store_true", help="Purge local student roster cache on startup and pull fresh from Supabase cloud")
     parser.add_argument("--configure-cloud", action="store_true", help="Open cloud credentials editor before starting")
     args = parser.parse_args()
 
@@ -669,7 +687,8 @@ def main() -> None:
         db_path=args.db_path,
         camera_index=args.camera_index,
         headless=args.headless,
-        det_size=args.det_size
+        det_size=args.det_size,
+        clear_cache=args.clear_cache
     )
     if args.configure_cloud:
         app.prompt_configure_credentials()

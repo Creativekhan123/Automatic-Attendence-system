@@ -360,8 +360,22 @@ class FleetCloudClient:
 
     def get_students(self, bus_id: Optional[str] = None, active_only: bool = True) -> List[Dict[str, Any]]:
         """Fetch student profiles. Filter by bus_id if specified."""
+        ok, students = self.get_students_with_status(bus_id=bus_id, active_only=active_only)
+        return students
+
+    def get_students_with_status(
+        self,
+        bus_id: Optional[str] = None,
+        active_only: bool = True
+    ) -> Tuple[bool, List[Dict[str, Any]]]:
+        """Fetch student profiles with explicit success status.
+
+        Returns:
+            (True, students_list) on HTTP 200 success.
+            (False, []) on network/HTTP failure or unconfigured client.
+        """
         if not self.is_configured():
-            return []
+            return False, []
         try:
             params = "select=*"
             if active_only:
@@ -375,13 +389,13 @@ class FleetCloudClient:
                 timeout=self.timeout
             )
             if resp.status_code == 200:
-                return resp.json()
+                return True, resp.json()
             logger.error(f"Failed to fetch students: HTTP {resp.status_code} {resp.text}")
-            return []
+            return False, []
         except Exception as e:
             logger.error(f"Error fetching students: {e}")
             self._last_error = str(e)
-            return []
+            return False, []
 
     def upsert_student(
         self,
