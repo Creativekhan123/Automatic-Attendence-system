@@ -138,3 +138,7 @@ class Camera:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Ensure camera release on context manager exit."""
         self.release()
+
+
+# Alias for backward and cross-module compatibility
+ThreadedCamera = Camera

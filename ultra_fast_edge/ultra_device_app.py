@@ -22,9 +22,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from fleet_system.device_app.database import DeviceDatabase
+from fleet_system.device_app.local_db import DeviceDatabase
 from fleet_system.device_app.sync_worker import DeviceSyncWorker
-from src.camera import ThreadedCamera
+from src.camera import Camera
 from ultra_fast_edge.yunet_detector import YuNetDetector
 from ultra_fast_edge.sface_recognizer import SFaceRecognizer
 
@@ -57,7 +57,7 @@ class UltraAttendanceApp:
         self.headless = headless
 
         self.db = DeviceDatabase(self.db_path)
-        self.sync_worker = DeviceSyncWorker(self.db, self.bus_id, sync_interval=5.0)
+        self.sync_worker = DeviceSyncWorker(db=self.db, bus_id=self.bus_id, interval_seconds=5.0)
 
         # Restore persisted configs if available
         saved_bus = self.db.get_config("bus_id")
@@ -84,7 +84,7 @@ class UltraAttendanceApp:
                 self.engine = "sface"
                 self.sface_recognizer = SFaceRecognizer()
 
-        self.camera: Optional[ThreadedCamera] = None
+        self.camera: Optional[Camera] = None
 
         # Attendance tracking
         self.confirmation_tracker: Dict[int, List[float]] = {}
@@ -95,6 +95,7 @@ class UltraAttendanceApp:
         self._roster_cache: List[Dict[str, Any]] = []
         self._roster_matrix: Optional[np.ndarray] = None
         self._last_roster_refresh: float = 0.0
+        self._already_present_ids: set = set()
 
         # Telemetry
         self.fps: float = 0.0
@@ -118,7 +119,7 @@ class UltraAttendanceApp:
         self.sync_worker.start()
         self._refresh_roster_cache(force=True)
 
-        self.camera = ThreadedCamera(camera_index=self.camera_index)
+        self.camera = Camera(camera_index=self.camera_index)
         if not self.camera.start():
             logger.error(f"Failed to open camera index {self.camera_index}")
             return False
@@ -132,33 +133,42 @@ class UltraAttendanceApp:
         return True
 
     def _refresh_roster_cache(self, force: bool = False) -> None:
-        """Refresh local roster vector matrix."""
+        """Refresh local roster vector matrix and today's attendance status."""
         now = time.time()
         if not force and (now - self._last_roster_refresh) < 5.0:
             return
 
         self._last_roster_refresh = now
         try:
-            students = self.db.get_students_for_bus(self.bus_id)
+            students = self.db.get_active_students_for_bus(self.bus_id)
             valid_students = []
             emb_list = []
 
             for s in students:
-                emb = s.get("embedding")
-                if emb is not None:
-                    arr = np.array(emb, dtype=np.float32).flatten()
-                    norm = np.linalg.norm(arr)
-                    if norm > 0:
-                        arr = arr / norm
+                emb_raw = s.get("face_embedding")
+                if emb_raw is not None:
+                    if isinstance(emb_raw, (bytes, bytearray)):
+                        arr = np.frombuffer(emb_raw, dtype=np.float32)
+                    else:
+                        arr = np.array(emb_raw, dtype=np.float32)
+                    arr = arr.flatten()
+                    if arr.size in (128, 512):
+                        norm = np.linalg.norm(arr)
+                        if norm > 0:
+                            arr = arr / norm
                         emb_list.append(arr)
                         valid_students.append(s)
 
             if emb_list:
-                self._roster_matrix = np.vstack(emb_list)
+                self._roster_matrix = np.vstack(emb_list).astype(np.float32)
                 self._roster_cache = valid_students
             else:
                 self._roster_matrix = None
                 self._roster_cache = []
+
+            today_str = time.strftime("%Y-%m-%d")
+            present_ids = self.db.get_present_student_ids(self.bus_id, today_str)
+            self._already_present_ids = set(present_ids)
         except Exception as e:
             logger.error(f"Error refreshing roster cache: {e}")
 
@@ -239,7 +249,7 @@ class UltraAttendanceApp:
                 sid = matched_student["student_id"]
                 sname = matched_student.get("name", f"ID {sid}")
 
-                if self.db.is_marked_today(sid):
+                if sid in self._already_present_ids:
                     box_color = (0, 255, 0)  # Green for present
                     status_text = f"PRESENT: {sname}"
                 else:
@@ -255,12 +265,15 @@ class UltraAttendanceApp:
                             student_id=sid,
                             bus_id=self.bus_id,
                             device_id=self.device_id,
-                            confidence=score
+                            status="Present"
                         )
                         if is_new:
+                            self._already_present_ids.add(sid)
                             logger.info(f"Attendance MARKED for {sname} ({sid}) on Bus {self.bus_id} [Conf: {score:.2f}]")
                             self.banner = (f"MARKED PRESENT: {sname}", time.time() + 3.0, False)
-                            self.sync_worker.trigger_sync_now()
+                            self.sync_worker.trigger_immediate_sync()
+                        else:
+                            self._already_present_ids.add(sid)
                         box_color = (0, 255, 0)
                         status_text = f"MARKED: {sname}"
                     else:

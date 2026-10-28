@@ -122,8 +122,8 @@ def measure_insightface_performance(iterations: int = 20, det_size: int = 320) -
 
 def run_camera_benchmark(camera_index: int = 0, num_frames: int = 100) -> Optional[Dict[str, Any]]:
     """Measure pure video frame grab speed without AI inference."""
-    from src.camera import ThreadedCamera
-    cam = ThreadedCamera(camera_index=camera_index)
+    from src.camera import Camera
+    cam = Camera(camera_index=camera_index)
     if not cam.start():
         return None
 
