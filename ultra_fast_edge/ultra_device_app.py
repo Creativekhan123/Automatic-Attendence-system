@@ -88,8 +88,8 @@ class UltraAttendanceApp:
 
         # Attendance tracking
         self.confirmation_tracker: Dict[int, List[float]] = {}
-        self.confirmation_window: float = 2.0
-        self.required_confirmations: int = 3
+        self.confirmation_window: float = 0.5
+        self.required_confirmations: int = 2
 
         # Cached roster matrix for instant vector dot-product matching (<0.05ms)
         self._roster_cache: List[Dict[str, Any]] = []
@@ -111,7 +111,7 @@ class UltraAttendanceApp:
         self._latest_ai_input_frame: Optional[np.ndarray] = None
         self._current_detections: List[Dict[str, Any]] = []
         self._last_ai_time: float = 0.0
-        self.ai_interval: float = 0.12  # Runs AI ~8 times/sec, leaving Pi CPU cool
+        self.ai_interval: float = 0.05  # Runs AI ~20 times/sec for ~0.25s instant detection
 
     def initialize(self) -> bool:
         """Start database, models, sync worker, and camera."""

@@ -47,8 +47,8 @@ class AttendanceDeviceApp:
         camera_index: int = 0,
         headless: bool = False,
         similarity_threshold: float = 0.50,
-        required_confirmations: int = 3,
-        confirmation_window: float = 2.0,
+        required_confirmations: int = 2,
+        confirmation_window: float = 0.5,
         det_size: Optional[int] = None
     ) -> None:
         self.db_path = db_path
@@ -129,7 +129,7 @@ class AttendanceDeviceApp:
         self._latest_ai_input_frame: Optional[np.ndarray] = None
         self._current_detections: List[Dict[str, Any]] = []
         self._last_ai_time: float = 0.0
-        self.ai_interval: float = 0.15  # Runs AI ~6 times/sec, leaving CPU headroom
+        self.ai_interval: float = 0.05  # Runs AI ~20 times/sec for ~0.25s instant detection
         self.ai_fps: float = 0.0
 
     def initialize(self) -> bool:
