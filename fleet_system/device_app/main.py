@@ -121,6 +121,16 @@ class AttendanceDeviceApp:
         # Banner notifications: (text, expire_time, is_error)
         self.banner: Optional[Tuple[str, float, bool]] = None
 
+        # Decoupled Asynchronous AI worker state
+        self._ai_thread: Optional[threading.Thread] = None
+        self._ai_running: bool = False
+        self._ai_lock = threading.Lock()
+        self._latest_ai_input_frame: Optional[np.ndarray] = None
+        self._current_detections: List[Dict[str, Any]] = []
+        self._last_ai_time: float = 0.0
+        self.ai_interval: float = 0.15  # Runs AI ~6 times/sec, leaving CPU headroom
+        self.ai_fps: float = 0.0
+
     def initialize(self) -> bool:
         """Start database, models, sync worker, and camera."""
         logger.info(f"Initializing Attendance Device [Bus: {self.bus_id}, Device: {self.device_id}, DetSize: {self.det_size}x{self.det_size}]")
@@ -147,6 +157,12 @@ class AttendanceDeviceApp:
         if not self.camera.start():
             logger.error(f"Failed to open camera index {self.camera_index}")
             return False
+
+        # 4. Start asynchronous background AI worker
+        self._ai_running = True
+        self._ai_thread = threading.Thread(target=self._ai_worker_loop, daemon=True)
+        self._ai_thread.start()
+        logger.info("Asynchronous AI worker thread started.")
 
         logger.info("Camera started successfully.")
         return True
@@ -190,23 +206,55 @@ class AttendanceDeviceApp:
         except Exception as e:
             logger.error(f"Error refreshing in-memory roster cache: {e}")
 
-    def process_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Process a single video frame for face detection, tracking, and attendance marking."""
+    def _ai_worker_loop(self) -> None:
+        """Background worker executing AI inference decoupled from camera display."""
+        while self._ai_running:
+            frame_to_process = None
+            with self._ai_lock:
+                if self._latest_ai_input_frame is not None:
+                    # Shallow copy or slice to process asynchronously
+                    frame_to_process = self._latest_ai_input_frame.copy()
+                    self._latest_ai_input_frame = None
+
+            if frame_to_process is None:
+                time.sleep(0.01)
+                continue
+
+            t0 = time.perf_counter()
+            try:
+                new_detections = self._run_ai_pipeline(frame_to_process)
+            except Exception as e:
+                logger.error(f"Error in background AI worker: {e}")
+                new_detections = []
+
+            dt = time.perf_counter() - t0
+            if dt > 0:
+                inst = 1.0 / dt
+                self.ai_fps = (0.8 * self.ai_fps + 0.2 * inst) if self.ai_fps > 0 else inst
+
+            with self._ai_lock:
+                self._current_detections = new_detections
+                self._last_ai_time = time.time()
+
+            # Throttle interval to prevent CPU from pegging at 100%
+            time.sleep(self.ai_interval)
+
+    def _run_ai_pipeline(self, frame: np.ndarray) -> List[Dict[str, Any]]:
+        """Run face detection, tracking, and attendance marking on a single frame."""
         now = time.time()
         self._refresh_roster_cache()
 
         if not self.face_recognizer:
-            return frame
+            return []
 
-        # Detect faces with minimum size filter (40px) to skip tiny distant background noise
         faces = self.face_recognizer.extract_faces(frame, min_size=40)
+        detections: List[Dict[str, Any]] = []
 
         for face in faces:
             bbox = face.bbox.astype(int)
-            x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
+            x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
             query_emb = face.embedding
 
-            # Match against local roster using vectorized BLAS dot product (<0.05ms)
             label, matched_student, score = self.face_recognizer.identify_face_vectorized(
                 query_emb,
                 self._roster_matrix,
@@ -224,9 +272,7 @@ class AttendanceDeviceApp:
                     box_color = (0, 255, 0)
                     status_text = f"PRESENT: {sname}"
                 else:
-                    # Maintain sliding confirmation window
                     timestamps = self.confirmation_tracker.get(sid, [])
-                    # Prune expired timestamps
                     timestamps = [t for t in timestamps if (now - t) <= self.confirmation_window]
                     timestamps.append(now)
                     self.confirmation_tracker[sid] = timestamps
@@ -234,7 +280,6 @@ class AttendanceDeviceApp:
                     obs_count = len(timestamps)
 
                     if obs_count >= self.required_confirmations:
-                        # Attempt attendance recording
                         is_new, msg = self.db.record_attendance(
                             student_id=sid,
                             bus_id=self.bus_id,
@@ -256,21 +301,41 @@ class AttendanceDeviceApp:
                         box_color = (0, 255, 255)  # Yellow for confirming
                         status_text = f"CONFIRMING ({obs_count}/{self.required_confirmations}): {sname}"
 
-            # Draw bounding box and label if not headless
-            if not self.headless:
+            detections.append({
+                "bbox": (x1, y1, x2, y2),
+                "color": box_color,
+                "text": f"{status_text} ({score:.2f})",
+                "score": score
+            })
+
+        return detections
+
+    def process_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Render recent AI detections and overlay onto frame in real-time (<1ms)."""
+        now = time.time()
+
+        # Update latest frame for background AI worker
+        with self._ai_lock:
+            self._latest_ai_input_frame = frame
+            # Only draw detections if they are fresh (within last 0.8 seconds)
+            is_fresh = (now - self._last_ai_time) <= 0.8
+            detections = list(self._current_detections) if is_fresh else []
+
+        if not self.headless:
+            for det in detections:
+                x1, y1, x2, y2 = det["bbox"]
+                box_color = det["color"]
+                text = det["text"]
                 cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
                 cv2.putText(
                     frame,
-                    f"{status_text} ({score:.2f})",
+                    text,
                     (x1, max(20, y1 - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.55,
                     box_color,
                     2
                 )
-
-        # Draw overlays if not headless
-        if not self.headless:
             self._render_overlay(frame)
 
         return frame
@@ -286,7 +351,7 @@ class AttendanceDeviceApp:
         cv2.rectangle(frame, (0, 0), (w, 42), (20, 24, 33), -1)
         top_txt = (
             f"BUS: {self.bus_id} | "
-            f"FPS: {self.fps:.1f} | "
+            f"FPS: {self.fps:.1f} (AI: {self.ai_fps:.1f}) | "
             f"RES: {self.det_size}p | "
             f"PRESENT: {stats['total_present']}/{stats['total_assigned']}"
         )
@@ -542,7 +607,7 @@ class AttendanceDeviceApp:
                     stats = self.db.get_stats_for_today(self.bus_id)
                     is_on = self.sync_worker.is_online
                     logger.info(
-                        f"[TELEMETRY] FPS: {self.fps:.1f} | Res: {self.det_size}x{self.det_size} | "
+                        f"[TELEMETRY] Video FPS: {self.fps:.1f} | AI FPS: {self.ai_fps:.1f} | Res: {self.det_size}x{self.det_size} | "
                         f"Present: {stats['total_present']}/{stats['total_assigned']} | "
                         f"Net: {'ONLINE' if is_on else 'OFFLINE'}"
                     )
@@ -574,6 +639,9 @@ class AttendanceDeviceApp:
     def cleanup(self) -> None:
         """Release camera, windows, and stop background thread."""
         logger.info("Cleaning up device resources...")
+        self._ai_running = False
+        if self._ai_thread and self._ai_thread.is_alive():
+            self._ai_thread.join(timeout=2.0)
         if self.camera:
             self.camera.release()
         if not self.headless:
