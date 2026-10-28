@@ -47,10 +47,11 @@ class AttendanceDeviceApp:
         camera_index: int = 0,
         headless: bool = False,
         similarity_threshold: float = 0.50,
-        required_confirmations: int = 2,
-        confirmation_window: float = 0.5,
+        required_confirmations: int = 1,
+        confirmation_window: float = 2.5,
         det_size: Optional[int] = None,
-        clear_cache: bool = False
+        clear_cache: bool = False,
+        ai_interval: float = 0.03
     ) -> None:
         self.db_path = db_path
         self.camera_index = camera_index
@@ -58,6 +59,7 @@ class AttendanceDeviceApp:
         self.similarity_threshold = similarity_threshold
         self.required_confirmations = required_confirmations
         self.confirmation_window = confirmation_window
+        self.ai_interval: float = ai_interval
 
         # Initialize local storage
         self.db = DeviceDatabase(db_path=self.db_path)
@@ -135,7 +137,6 @@ class AttendanceDeviceApp:
         self._latest_ai_input_frame: Optional[np.ndarray] = None
         self._current_detections: List[Dict[str, Any]] = []
         self._last_ai_time: float = 0.0
-        self.ai_interval: float = 0.05  # Runs AI ~20 times/sec for ~0.25s instant detection
         self.ai_fps: float = 0.0
 
     def initialize(self) -> bool:
@@ -678,6 +679,8 @@ def main() -> None:
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run without GUI/OpenCV display (Raspberry Pi)")
     parser.add_argument("--clear-cache", action="store_true", help="Purge local student roster cache on startup and pull fresh from Supabase cloud")
+    parser.add_argument("--confirmations", type=int, default=1, choices=[1, 2, 3], help="Number of consecutive matches before marking attendance (default: 1)")
+    parser.add_argument("--window", type=float, default=2.5, help="Confirmation window in seconds (default: 2.5s for Raspberry Pi compatibility)")
     parser.add_argument("--configure-cloud", action="store_true", help="Open cloud credentials editor before starting")
     args = parser.parse_args()
 
@@ -688,7 +691,9 @@ def main() -> None:
         camera_index=args.camera_index,
         headless=args.headless,
         det_size=args.det_size,
-        clear_cache=args.clear_cache
+        clear_cache=args.clear_cache,
+        required_confirmations=args.confirmations,
+        confirmation_window=args.window
     )
     if args.configure_cloud:
         app.prompt_configure_credentials()

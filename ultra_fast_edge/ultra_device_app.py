@@ -47,7 +47,10 @@ class UltraAttendanceApp:
         det_size: int = 320,
         engine: str = "hybrid",
         headless: bool = False,
-        clear_cache: bool = False
+        clear_cache: bool = False,
+        required_confirmations: int = 1,
+        confirmation_window: float = 2.5,
+        ai_interval: float = 0.03
     ) -> None:
         self.bus_id = bus_id
         self.device_id = device_id or bus_id
@@ -56,6 +59,9 @@ class UltraAttendanceApp:
         self.det_size = det_size
         self.engine = engine.lower()
         self.headless = headless
+        self.required_confirmations = required_confirmations
+        self.confirmation_window = confirmation_window
+        self.ai_interval = ai_interval
 
         self.db = DeviceDatabase(self.db_path)
         if clear_cache:
@@ -92,8 +98,6 @@ class UltraAttendanceApp:
 
         # Attendance tracking
         self.confirmation_tracker: Dict[int, List[float]] = {}
-        self.confirmation_window: float = 0.5
-        self.required_confirmations: int = 2
 
         # Cached roster matrix for instant vector dot-product matching (<0.05ms)
         self._roster_cache: List[Dict[str, Any]] = []
@@ -115,7 +119,6 @@ class UltraAttendanceApp:
         self._latest_ai_input_frame: Optional[np.ndarray] = None
         self._current_detections: List[Dict[str, Any]] = []
         self._last_ai_time: float = 0.0
-        self.ai_interval: float = 0.05  # Runs AI ~20 times/sec for ~0.25s instant detection
 
     def initialize(self) -> bool:
         """Start database, models, sync worker, and camera."""
@@ -450,6 +453,8 @@ def main() -> None:
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run in headless terminal mode")
     parser.add_argument("--clear-cache", action="store_true", help="Purge local student roster cache on startup and pull fresh from Supabase cloud")
+    parser.add_argument("--confirmations", type=int, default=1, choices=[1, 2, 3], help="Number of consecutive matches before marking attendance (default: 1)")
+    parser.add_argument("--window", type=float, default=2.5, help="Confirmation window in seconds (default: 2.5s for Raspberry Pi compatibility)")
     args = parser.parse_args()
 
     app = UltraAttendanceApp(
@@ -460,7 +465,9 @@ def main() -> None:
         det_size=args.det_size,
         engine=args.engine,
         headless=args.headless,
-        clear_cache=args.clear_cache
+        clear_cache=args.clear_cache,
+        required_confirmations=args.confirmations,
+        confirmation_window=args.window
     )
     app.run()
 
