@@ -107,17 +107,27 @@ class DeviceDatabase:
     # ROSTER / STUDENT CACHE METHODS
     # =========================================================================
 
-    def sync_roster_cache(self, cloud_students: List[Dict[str, Any]], cloud_biometrics: Dict[str, bytes]) -> int:
-        """Update or insert students and embeddings from cloud. Returns count of active students."""
+    def sync_roster_cache(
+        self,
+        cloud_students: List[Dict[str, Any]],
+        cloud_biometrics: Dict[str, bytes],
+        bus_id: Optional[str] = None
+    ) -> int:
+        """Update or insert students and embeddings from cloud, and reconcile deletions/reassignments locally."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            active_cloud_sids = set()
+
             for s in cloud_students:
                 sid = str(s["student_id"]).strip()
                 name = str(s.get("name", "")).strip()
                 class_name = str(s.get("class_name", "")).strip()
-                bus_id = str(s.get("bus_id", "")).strip()
+                s_bus = str(s.get("bus_id", "")).strip()
                 is_active = 1 if s.get("is_active", True) else 0
                 now_str = datetime.now().isoformat()
+
+                if is_active:
+                    active_cloud_sids.add(sid)
 
                 emb = cloud_biometrics.get(sid)
 
@@ -132,7 +142,7 @@ class DeviceDatabase:
                             face_embedding=excluded.face_embedding,
                             is_active=excluded.is_active,
                             updated_at=excluded.updated_at
-                    """, (sid, name, class_name, bus_id, emb, is_active, now_str))
+                    """, (sid, name, class_name, s_bus, emb, is_active, now_str))
                 else:
                     # Update metadata only, preserve existing embedding if not provided
                     cursor.execute("""
@@ -144,11 +154,25 @@ class DeviceDatabase:
                             bus_id=excluded.bus_id,
                             is_active=excluded.is_active,
                             updated_at=excluded.updated_at
-                    """, (sid, name, class_name, bus_id, is_active, now_str))
+                    """, (sid, name, class_name, s_bus, is_active, now_str))
+
+            # Reconcile deletions / reassignments for this bus:
+            # Purge any local student assigned to this bus who is no longer active in the cloud
+            if bus_id:
+                clean_bus = bus_id.strip()
+                cursor.execute("SELECT student_id FROM students WHERE bus_id = ?", (clean_bus,))
+                local_sids = {str(r["student_id"]).strip() for r in cursor.fetchall()}
+                removed_sids = local_sids - active_cloud_sids
+                if removed_sids:
+                    placeholders = ",".join("?" for _ in removed_sids)
+                    cursor.execute(
+                        f"DELETE FROM students WHERE bus_id = ? AND student_id IN ({placeholders})",
+                        [clean_bus] + list(removed_sids)
+                    )
 
             conn.commit()
 
-        return len(self.get_active_students_for_bus(bus_id=None))
+        return len(self.get_active_students_for_bus(bus_id=bus_id))
 
     def delete_student(self, student_id: str) -> bool:
         """Permanently delete a student and their face embedding locally."""

@@ -30,6 +30,7 @@ from src.camera import Camera
 from src.face_recognizer import FaceRecognizer
 from fleet_system.device_app.local_db import DeviceDatabase
 from fleet_system.device_app.sync_worker import DeviceSyncWorker
+from fleet_system.device_app.buzzer import BuzzerController
 from fleet_system.shared.cloud_client import FleetCloudClient, save_cloud_credentials
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -46,10 +47,13 @@ class AttendanceDeviceApp:
         db_path: str = "fleet_system/device_app/data/device.db",
         camera_index: int = 0,
         headless: bool = False,
-        similarity_threshold: float = 0.50,
-        required_confirmations: int = 3,
-        confirmation_window: float = 2.0,
-        det_size: Optional[int] = None
+        similarity_threshold: float = 0.47,
+        required_confirmations: int = 2,
+        confirmation_window: float = 3.5,
+        det_size: Optional[int] = None,
+        ai_interval: float = 0.05,
+        buzzer_pin: int = 23,
+        enable_buzzer: bool = True
     ) -> None:
         self.db_path = db_path
         self.camera_index = camera_index
@@ -57,6 +61,11 @@ class AttendanceDeviceApp:
         self.similarity_threshold = similarity_threshold
         self.required_confirmations = required_confirmations
         self.confirmation_window = confirmation_window
+        self.ai_interval = ai_interval
+        self.buzzer_pin = buzzer_pin
+
+        # Initialize hardware buzzer (defaults to BCM GPIO 23)
+        self.buzzer = BuzzerController(pin=self.buzzer_pin, enabled=enable_buzzer)
 
         # Initialize local storage
         self.db = DeviceDatabase(db_path=self.db_path)
@@ -129,7 +138,6 @@ class AttendanceDeviceApp:
         self._latest_ai_input_frame: Optional[np.ndarray] = None
         self._current_detections: List[Dict[str, Any]] = []
         self._last_ai_time: float = 0.0
-        self.ai_interval: float = 0.15  # Runs AI ~6 times/sec, leaving CPU headroom
         self.ai_fps: float = 0.0
 
     def initialize(self) -> bool:
@@ -294,6 +302,8 @@ class AttendanceDeviceApp:
                             self.banner = (f"ATTENDANCE MARKED: {sname} ({sid})", now + 3.0, False)
                             logger.info(f"Marked attendance for {sname} ({sid}) on {self.bus_id}")
                             self.sync_worker.trigger_immediate_sync()
+                            if self.buzzer:
+                                self.buzzer.beep(duration=0.18, count=1)
                         else:
                             self._already_present_ids.add(sid)
                             box_color = (0, 255, 0)
@@ -318,8 +328,8 @@ class AttendanceDeviceApp:
         # Update latest frame for background AI worker
         with self._ai_lock:
             self._latest_ai_input_frame = frame
-            # Only draw detections if they are fresh (within last 0.8 seconds)
-            is_fresh = (now - self._last_ai_time) <= 0.8
+            # Only draw detections if they are fresh (within last 1.5 seconds)
+            is_fresh = (now - self._last_ai_time) <= 1.5
             detections = list(self._current_detections) if is_fresh else []
 
         if not self.headless:
@@ -678,6 +688,8 @@ class AttendanceDeviceApp:
             cv2.destroyAllWindows()
         if self.sync_worker.is_running:
             self.sync_worker.stop()
+        if hasattr(self, "buzzer") and self.buzzer:
+            self.buzzer.cleanup()
         logger.info("Device application stopped cleanly.")
 
 
@@ -690,6 +702,12 @@ def main() -> None:
     parser.add_argument("--db-path", type=str, default="fleet_system/device_app/data/device.db")
     parser.add_argument("--headless", action="store_true", help="Run without GUI/OpenCV display (Raspberry Pi)")
     parser.add_argument("--configure-cloud", action="store_true", help="Open cloud credentials editor before starting")
+    parser.add_argument("--confirmations", type=int, default=2, choices=[1, 2, 3], help="Consecutive matches required (default: 2)")
+    parser.add_argument("--window", type=float, default=3.5, help="Confirmation window in seconds (default: 3.5s)")
+    parser.add_argument("--threshold", type=float, default=0.47, help="Face similarity threshold (default: 0.47)")
+    parser.add_argument("--ai-interval", type=float, default=0.05, help="AI background loop interval in seconds (default: 0.05s)")
+    parser.add_argument("--buzzer-pin", type=int, default=23, help="Raspberry Pi BCM GPIO pin for buzzer (default: 23)")
+    parser.add_argument("--no-buzzer", action="store_true", help="Disable physical buzzer audio")
     args = parser.parse_args()
 
     app = AttendanceDeviceApp(
@@ -698,7 +716,13 @@ def main() -> None:
         db_path=args.db_path,
         camera_index=args.camera_index,
         headless=args.headless,
-        det_size=args.det_size
+        det_size=args.det_size,
+        similarity_threshold=args.threshold,
+        required_confirmations=args.confirmations,
+        confirmation_window=args.window,
+        ai_interval=args.ai_interval,
+        buzzer_pin=args.buzzer_pin,
+        enable_buzzer=not args.no_buzzer
     )
     if args.configure_cloud:
         app.prompt_configure_credentials()

@@ -137,8 +137,8 @@ class DeviceSyncWorker:
 
         # 2. Pull roster updates (Download assigned students for this bus)
         try:
-            cloud_students = self.cloud.get_students(bus_id=self.bus_id, active_only=False)
-            if cloud_students:
+            ok, cloud_students = self.cloud.get_students_with_status(bus_id=self.bus_id, active_only=False)
+            if ok:
                 active_sids = [s["student_id"] for s in cloud_students if s.get("is_active", True)]
                 # Check which students lack biometric vectors locally
                 missing_sids = self.db.get_missing_biometric_student_ids()
@@ -148,7 +148,11 @@ class DeviceSyncWorker:
                 if fetch_sids:
                     cloud_biometrics = self.cloud.get_biometrics_for_students(fetch_sids)
 
-                total_active = self.db.sync_roster_cache(cloud_students, cloud_biometrics)
+                total_active = self.db.sync_roster_cache(
+                    cloud_students=cloud_students,
+                    cloud_biometrics=cloud_biometrics,
+                    bus_id=self.bus_id
+                )
                 with self._lock:
                     self.active_students_count = total_active
         except Exception as e:
@@ -232,7 +236,11 @@ class DeviceSyncWorker:
                 if sids:
                     cloud_biometrics = self.cloud.get_biometrics_for_students(sids)
 
-            total_active = self.db.sync_roster_cache(cloud_students or [], cloud_biometrics)
+            total_active = self.db.sync_roster_cache(
+                cloud_students=cloud_students or [],
+                cloud_biometrics=cloud_biometrics,
+                bus_id=self.bus_id
+            )
             with self._lock:
                 self.active_students_count = total_active
         except Exception as e:
